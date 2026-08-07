@@ -54,7 +54,7 @@ paridad `tests/scripts/vm_compare.sh` no detecta ninguna de ellas.
 | A4 | Desbordamiento de `^` | ✓ | ✗ | ✗ | **Alta** |
 | A5 | `$??` con patrón vacío | ✗ | ✓ | ✓ | Media |
 | A6 | `$/` con separador vacío | ~ | ~ | ~ | Media |
-| A7 | `#?` sobre un valor de error | ✓ | ✗ | — | **Alta** |
+| A7 | `#?` sobre un valor de error | ✓ | ✗ | ✗ | **Alta** |
 | B1 | `0x41` es Char, no Int | — | — | — | Doc |
 | B2 | `$[0..n]` acepta el 0, `arr[0]` no | — | — | — | Diseño |
 | B3 | Yuxtaposición concatena en `=`, `:=` y `<~` | — | — | — | Doc |
@@ -255,10 +255,15 @@ x = io::read("no_existe.txt")
 |---|---|
 | TW | `(##IO, **38**, ##IO(No such file or directory (os error 2)))` |
 | VM | `(##IO, **0**, ##IO(No such file or directory (os error 2)))` |
+| JS | `(##IO, **0**, ##IO(No such file or directory (os error 2)))` |
+| ML | `(##IO, 38, …)` |
 
 `GUIDE.md` §18 dice que para un Error el `count` es *"length of the error
 message"*. El mensaje tiene 38 caracteres, que es lo que da el tree-walker. La
-VM devuelve 0 — no mide nada.
+VM y JS devuelven 0 — no miden nada.
+
+Nótese la simetría con A1: allí el tree-walker es el único que falla, aquí es
+el único que acierta. No hay un motor de referencia fiable para `#?`.
 
 Es la misma familia que A1: `#?` es el operador con más divergencias de todo el
 lenguaje, y en cada una un motor distinto es el que falla.
