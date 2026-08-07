@@ -133,7 +133,8 @@ let is_delimiter = function
 let starts_statement = function
   | TOut | TIn | TIf | TMatch | TAt | TAtLabel _ | TAtBreak | TAtCont | TAtSleep
   | TAtLabelBreak _ | TAtLabelCont _ | TRet | TNewline | TRBrace | TEOF
-  | TBackslash | TSemi | TOutClear | TOutPos | TOutGate -> true
+  | TBackslash | TSemi | TOutClear | TOutPos | TOutGate
+  | TKeyBlock | TKeyPoll -> true
   | _ -> false
 
 (* Decide whether a postfix `[...]` is navigation or a plain 1-D index: it is
@@ -771,6 +772,8 @@ and parse_stmt p =
   | TAtSleep -> ignore (advance p); Sleep (parse_expr p)
   | TBackslash -> ignore (advance p); Discard (ident p)
   | TTry -> parse_try p
+  | TKeyBlock -> ignore (advance p); KeyInput (true, ident p)
+  | TKeyPoll -> ignore (advance p); KeyInput (false, ident p)
   | TOutClear -> ignore (advance p); ClearScreen
   | TOutPos -> parse_output_pos p
   | TOutGate -> ignore (advance p); TuiBlock (parse_block p)

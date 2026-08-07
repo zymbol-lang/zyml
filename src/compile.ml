@@ -1185,6 +1185,14 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
          let v = g fr in
          List.iter (fun (f, store) -> store fr (copy_val (field_get v f))) stores)
 
+  | KeyInput (blocking, name) ->
+    let st = comp_store c (LVar name) in
+    fun fr ->
+      (* Anything already buffered must reach the screen first: the prompt a
+         program printed before waiting for a key is usually the point. *)
+      flush_out ();
+      st fr (read_key ~blocking)
+
   | ClearScreen -> fun _ -> emit "\027[2J\027[1;1H"
 
   | OutputPos (slots, items) ->
@@ -1226,11 +1234,19 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
     (* Alternate screen in, and out again on every path — including an error,
        or the terminal is left unusable. *)
     fun fr ->
-      if not (Unix.isatty Unix.stdout) then
-        errk "IO" ">>| needs a terminal; stdout is not a TTY";
-      emit "\027[?1049h";
+      (* Raw mode is a property of the input side, so stdin is what has to be
+         a terminal.  Message matches the reference engine's. *)
+      if not (Unix.isatty Unix.stdin) then
+        errk "IO" "failed to enable raw mode: No such device or address (os error 6)";
+      (* Alternate screen, cursor home, cursor hidden — and the exact inverse
+         on the way out.  These are the bytes the reference engine writes. *)
+      emit "\027[?1049h\027[1;1H\027[?25l";
       flush_out ();
-      let restore () = emit "\027[?1049l"; flush_out () in
+      let restore () =
+        leave_raw ();
+        emit "\027[?1049l\027[?25h";
+        flush_out ()
+      in
       (try b fr with e -> restore (); raise e);
       restore ()
 

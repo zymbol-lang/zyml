@@ -52,6 +52,7 @@ type token =
   | TShellOpen | TShellClose
   | TOutClear | TOutSize | TOutPos | TOutGate
   | THot                        (* ° — hot definition *)
+  | TKeyBlock | TKeyPoll        (* <<| and <<|? *)
   | TNumeralMode of int         (* #d0d9# — the script's zero code point *)
   | TErrType of string          (* ##Div, ##Index, ##_ *)
   | TEOF
@@ -108,6 +109,7 @@ let show = function
   | TShellOpen -> "<\\" | TShellClose -> "\\>"
   | TOutClear -> ">>!" | TOutSize -> ">>?" | TOutPos -> ">>~" | TOutGate -> ">>|"
   | THot -> "\xc2\xb0"
+  | TKeyBlock -> "<<|" | TKeyPoll -> "<<|?"
   | TNumeralMode b -> Printf.sprintf "#<%04X>#" b
   | TErrType t -> "##" ^ t
   | TEOF -> "<eof>"
@@ -363,7 +365,12 @@ let tokenize (src : string) : t array =
         else if peek 1 = '=' then begin push TGe; i := !i + 2 end
         else begin push TGt; incr i end
       | '<' ->
-        if peek 1 = '<' then begin push TIn; i := !i + 2 end
+        (* `<<|?` before `<<|` before `<<`: longest match wins. *)
+        if peek 1 = '<' && peek 2 = '|' && peek 3 = '?' then begin
+          push TKeyPoll; i := !i + 4
+        end
+        else if peek 1 = '<' && peek 2 = '|' then begin push TKeyBlock; i := !i + 3 end
+        else if peek 1 = '<' then begin push TIn; i := !i + 2 end
         else if peek 1 = '>' then begin push TNeq; i := !i + 2 end
         else if peek 1 = '=' then begin push TLe; i := !i + 2 end
         else if peek 1 = '~' then begin push TRet; i := !i + 2 end

@@ -16,6 +16,10 @@ let read_file path =
   s
 
 let die msg =
+  (* Raw mode outlives the process unless it is undone, and a shell left in it
+     looks hung.  Every exit path goes through here or through the normal end
+     of cmd_run. *)
+  Value.leave_raw ();
   Value.flush_out ();
   prerr_endline msg;
   exit 1
@@ -38,6 +42,7 @@ let cmd_run path =
       let prog = load path in
       let run = Compile.compile ~file:path prog in
       run ();
+      Value.leave_raw ();
       Value.flush_out ())
 
 let cmd_check path =

@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-400%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-401%2F532-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -116,6 +116,9 @@ make corpus      # every .zy in ../interpreter/tests
 bash tests/parity.sh --corpus -v    # ... and print each mismatch
 ```
 
+Key input is the exception: `<<|` needs a real terminal, so it is tested
+through a pty rather than a pipe — see [tests/tui/](tests/tui/).
+
 `--corpus` expects a checkout of the Zymbol interpreter at `../interpreter`,
 and the reference `zymbol` binary on `PATH`.
 
@@ -124,7 +127,7 @@ zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
 **Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**400 identical, 11 differing, 121 not yet supported.**
+**401 identical, 11 differing, 120 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
@@ -171,7 +174,8 @@ else widens to Float) · **`std/io`**, **`std/json`** (decode, encode,
 terminal *columns*, so a CJK ideograph counts two) · **TUI primitives** —
 `>>!` clear, `>>?` terminal size (answering the conventional `[24, 80]` with no
 TTY so a piped layout still runs), `>>~` positioned output with sparse slots
-and ANSI styling, `>>|` alternate-screen block · **destructuring** — `[a, *rest]`,
+and ANSI styling, `>>|` alternate-screen block, `<<|` / `<<|?` key input in raw mode with arrow
+keys decoded to their glyphs (`↑`, `↓`, `←`, `→`) · **destructuring** — `[a, *rest]`,
 `(x, y)`, `(name: n)`, overwriting rather than shadowing · **`°` hot
 definition** — `°x` anchors above the nearest loop and survives it, `x°`
 anchors to the loop and dies with it, both auto-initialising to the operator's

@@ -134,6 +134,7 @@ and stmt =
   (* `[a, *rest] = arr` / `(x, y) = tup` / `(name: n) = nt`.  A slot is a
      variable name, a rest collector, or `_` to discard the position. *)
   | Destructure of dpat * expr
+  | KeyInput of bool * string             (* <<| var  /  <<|? var *)
   | ClearScreen                           (* >>!              *)
   | OutputPos of expr option list * expr list  (* >>~ (r,c,…) > items *)
   | TuiBlock of stmt list                 (* >>| { … }        *)

@@ -833,6 +833,84 @@ let field_get v name =
      | None -> errk "Index" "named tuple has no field '%s'" name)
   | v -> errk "Type" "cannot read field '%s' of %s" name (type_name v)
 
+(* ------------------------------------------------------------- key input *)
+
+(* `<<|` and `<<|?` read a single keypress, which needs the terminal out of
+   canonical mode: no line buffering, no echo.  The saved attributes are
+   restored on every path, because leaving a shell in raw mode makes it appear
+   to have hung. *)
+
+let saved_termios : Unix.terminal_io option ref = ref None
+
+let enter_raw () =
+  if not (Unix.isatty Unix.stdin) then
+    errk "IO" "Failed to initialize input reader";
+  if !saved_termios = None then begin
+    let t = Unix.tcgetattr Unix.stdin in
+    saved_termios := Some t;
+    let raw = { t with Unix.c_icanon = false; c_echo = false;
+                       c_vmin = 1; c_vtime = 0 } in
+    Unix.tcsetattr Unix.stdin Unix.TCSANOW raw
+  end
+
+let leave_raw () =
+  match !saved_termios with
+  | Some t -> Unix.tcsetattr Unix.stdin Unix.TCSANOW t; saved_termios := None
+  | None -> ()
+
+(* Arrow keys arrive as `ESC [ A`..`D` and come back as the arrow glyphs
+   themselves — which is what leaves every ASCII letter free for commands. *)
+let arrow_of = function
+  | 'A' -> "\xe2\x86\x91"        (* ↑ *)
+  | 'B' -> "\xe2\x86\x93"        (* ↓ *)
+  | 'C' -> "\xe2\x86\x92"        (* → *)
+  | 'D' -> "\xe2\x86\x90"        (* ← *)
+  | c -> String.make 1 c
+
+let byte_ready () =
+  match Unix.select [ Unix.stdin ] [] [] 0.0 with
+  | [ _ ], _, _ -> true
+  | _ -> false
+
+let read_byte () =
+  let b = Bytes.create 1 in
+  if Unix.read Unix.stdin b 0 1 = 1 then Some (Bytes.get b 0) else None
+
+(* One keypress as a Char.  [blocking] false polls and yields '\000' when
+   nothing is pending. *)
+let read_key ~blocking : value =
+  enter_raw ();
+  let finish s = Chr s in
+  if (not blocking) && not (byte_ready ()) then finish "\000"
+  else
+    match read_byte () with
+    | None -> finish "\000"
+    | Some '\027' ->
+      (* Escape alone, or the start of an arrow sequence: only a byte that is
+         already waiting continues it, so a bare Escape does not block. *)
+      if byte_ready () then begin
+        match read_byte () with
+        | Some '[' ->
+          (match read_byte () with
+           | Some c -> finish (arrow_of c)
+           | None -> finish "\027")
+        | _ -> finish "\027"
+      end else finish "\027"
+    | Some '\r' -> finish "\n"
+    | Some c when Char.code c < 0x80 -> finish (String.make 1 c)
+    | Some c ->
+      (* A multi-byte character: pull its continuation bytes. *)
+      let b = Buffer.create 4 in
+      Buffer.add_char b c;
+      let extra =
+        let x = Char.code c in
+        if x land 0xE0 = 0xC0 then 1 else if x land 0xF0 = 0xE0 then 2 else 3
+      in
+      for _ = 1 to extra do
+        match read_byte () with Some k -> Buffer.add_char b k | None -> ()
+      done;
+      finish (Buffer.contents b)
+
 (* ---------------------------------------------------------------- output *)
 
 let out_buf = Buffer.create 65536
