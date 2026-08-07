@@ -51,6 +51,7 @@ type token =
   | TImport | TExport | TModule | TColonColon
   | TShellOpen | TShellClose
   | TOutClear | TOutSize | TOutPos | TOutGate
+  | THot                        (* ° — hot definition *)
   | TNumeralMode of int         (* #d0d9# — the script's zero code point *)
   | TErrType of string          (* ##Div, ##Index, ##_ *)
   | TEOF
@@ -106,6 +107,7 @@ let show = function
   | TImport -> "<#" | TExport -> "#>" | TModule -> "#" | TColonColon -> "::"
   | TShellOpen -> "<\\" | TShellClose -> "\\>"
   | TOutClear -> ">>!" | TOutSize -> ">>?" | TOutPos -> ">>~" | TOutGate -> ">>|"
+  | THot -> "\xc2\xb0"
   | TNumeralMode b -> Printf.sprintf "#<%04X>#" b
   | TErrType t -> "##" ^ t
   | TEOF -> "<eof>"
@@ -131,10 +133,17 @@ let tokenize (src : string) : t array =
 
   (* `¶` is U+00B6 = C2 B6, `°` is U+00B0 = C2 B0. *)
   let is_pilcrow () = peek 0 = '\xc2' && peek 1 = '\xb6' in
+  let is_degree () = peek 0 = '\xc2' && peek 1 = '\xb0' in
 
+  (* `°` and `¶` are operators built from bytes that would otherwise pass for
+     identifier characters, so a name has to stop before them: `x°` is `x`
+     followed by the hot operator, not an identifier called "x°". *)
+  let at_operator_char k =
+    k + 1 < n && src.[k] = '\xc2' && (src.[k + 1] = '\xb0' || src.[k + 1] = '\xb6')
+  in
   let read_ident () =
     let s = !i in
-    while !i < n && is_ident_char src.[!i] do incr i done;
+    while !i < n && is_ident_char src.[!i] && not (at_operator_char !i) do incr i done;
     String.sub src s (!i - s)
   in
 
@@ -316,6 +325,7 @@ let tokenize (src : string) : t array =
       done
     end
     else if is_pilcrow () then begin push TNewline; i := !i + 2 end
+    else if is_degree () then begin push THot; i := !i + 2 end
     else if is_digit c then push (read_number ())
     else if native_digit_base !i <> None then
       push (read_native_number (Option.get (native_digit_base !i)))

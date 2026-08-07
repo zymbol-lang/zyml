@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-388%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-400%2F532-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -124,19 +124,20 @@ zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
 **Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**388 identical, 10 differing, 134 not yet supported.**
+**400 identical, 11 differing, 121 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
 which prints elapsed wall time and therefore differs between engines *because*
 they differ in speed.
 
-The 10 differences are all accounted for, and none is a wrong answer:
+The 11 differences are all accounted for, and none is a wrong answer:
 
-* **6** are diagnostics from the Rust *semantic analyser* — array homogeneity,
+* **7** are diagnostics from the Rust *semantic analyser* — array homogeneity,
   argument type inference, undefined-variable detection inside lambdas,
-  underscore-variable scope rules.  Those programs are rejected before running.
-  zyml has no separate analysis pass, so it runs them.
+  underscore-variable scope rules, `°` used in output position.  Those programs
+  are rejected before running; zyml has no separate analysis pass, so it runs
+  them.
 * **4** are error-value edge cases and error *message* wording, where the kind
   matches but the text is this engine's own.
 
@@ -171,7 +172,12 @@ terminal *columns*, so a CJK ideograph counts two) · **TUI primitives** —
 `>>!` clear, `>>?` terminal size (answering the conventional `[24, 80]` with no
 TTY so a piped layout still runs), `>>~` positioned output with sparse slots
 and ANSI styling, `>>|` alternate-screen block · **destructuring** — `[a, *rest]`,
-`(x, y)`, `(name: n)`, overwriting rather than shadowing · **modules** — `# name { }` declaration, `<#` import with
+`(x, y)`, `(name: n)`, overwriting rather than shadowing · **`°` hot
+definition** — `°x` anchors above the nearest loop and survives it, `x°`
+anchors to the loop and dies with it, both auto-initialising to the operator's
+neutral value on first use (0 for `+`, 1 for `*`, `[]` for `$+`, `""` for
+juxtaposition — and 0 for `^`, which is why the reference warns that `x° ^= 3`
+is always 0) · **modules** — `# name { }` declaration, `<#` import with
 alias, `#>` export with renaming and re-export (`alias::fn`, `alias.CONST`),
 `alias::fn()` calls resolved at compile time, `alias.CONST`, private mutable
 module state that persists across calls, and state identity per *file path* so
@@ -185,9 +191,8 @@ execution.
 
 No single large blocker is left.  Ranked by how many corpus files each blocks:
 
-1. **`°` hot definition operator** (~7 files).
-2. **`<<|` / `<<|?` key input** — needs raw mode; the rest of the TUI set is in.
-3. **`std/net` and `std/db`** — both need an external dependency (HTTP, ODBC)
+1. **`<<|` / `<<|?` key input** — needs raw mode; the rest of the TUI set is in.
+2. **`std/net` and `std/db`** — both need an external dependency (HTTP, ODBC)
    rather than more OCaml.
 4. **Typed input** (`<< ###(4) "p" v`), script exec `</ />`.
 

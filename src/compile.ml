@@ -46,6 +46,10 @@ type ctx = {
      Shared by reference with every function compiled in that module, which is
      how a module function sees state the module body declared. *)
   mscope : (string, int * bool) Hashtbl.t option;   (* name -> slot, is_const *)
+  (* For `°`: each entry is (the loop's own scope, the scope just above it).
+     `x°` anchors to the first, `°x` to the second, which is the whole
+     difference between dying with the loop and surviving it. *)
+  mutable loops : ((string, binding) Hashtbl.t * (string, binding) Hashtbl.t) list;
   mimports : (string, modul) Hashtbl.t;
 }
 
@@ -79,6 +83,7 @@ let new_ctx ?mscope ?mimports parent = {
   capmap = []; capget = []; ncaps = 0;
   mscope;
   mimports = (match mimports with Some t -> t | None -> Hashtbl.create 4);
+  loops = [];
 }
 
 let push_scope c = c.scopes <- Hashtbl.create 8 :: c.scopes
@@ -89,6 +94,24 @@ let declare ?(is_const = false) c name =
   c.nslots <- c.nslots + 1;
   Hashtbl.replace (List.hd c.scopes) name { slot; is_const };
   slot
+
+(* Declare into a specific scope rather than the innermost one -- what `°`
+   needs, since it names the scope it wants. *)
+let declare_in c tbl name =
+  match Hashtbl.find_opt tbl name with
+  | Some b -> b.slot
+  | None ->
+    let slot = c.nslots in
+    c.nslots <- c.nslots + 1;
+    Hashtbl.replace tbl name { slot; is_const = false };
+    slot
+
+(* Where a hot variable lives.  Outside any loop both forms anchor to the
+   function (or global) scope, which is the outermost one. *)
+let hot_scope c prefix =
+  match c.loops with
+  | (own, above) :: _ -> if prefix then above else own
+  | [] -> List.nth c.scopes (List.length c.scopes - 1)
 
 let lookup_local c name =
   let rec go = function
@@ -193,13 +216,38 @@ let contains_val coll v =
                  done; !found)
   | c -> err "cannot search %s" (type_name c)
 
-let rec comp_expr (c : ctx) (e : expr) : code =
+(* The identity of the operator -- except for `^`, whose neutral is 0 and not
+   1.  The reference engine agrees, and warns about it: `x° ^= 3` is 0^3, so
+   the result is always 0. *)
+let neutral_of_op = function
+  | Mul | Div -> Int 1
+  | _ -> Int 0
+
+(* Resolve the slot a hot variable names.  If one is already visible, `°`
+   reuses it -- `acc° = 0` outside a loop and `acc° += i` inside are the same
+   variable.  Only a genuinely new name gets a slot, and then in the scope the
+   sigil's position asks for. *)
+let hot_slot (c : ctx) prefix name =
+  match resolve c name with
+  | RSlot i -> i
+  | _ -> declare_in c (hot_scope c prefix) name
+
+let rec comp_hot (c : ctx) prefix name (neutral : value) : code =
+  let i = hot_slot c prefix name in
+  fun fr -> (match Array.unsafe_get fr.slots i with Unit -> neutral | v -> v)
+
+and comp_expr (c : ctx) (e : expr) : code =
   match e with
   | ILit i -> let v = Int i in fun _ -> v
   | FLit f -> let v = Float f in fun _ -> v
   | SLit s -> let v = Str s in fun _ -> v
   | CLit s -> let v = Chr s in fun _ -> v
   | BLit b -> let v = Bool b in fun _ -> v
+
+  (* A hot variable reads as its neutral value until something writes to it.
+     Resolving it lazily this way means no initialiser has to be emitted at the
+     point where the scope opens. *)
+  | Hot (prefix, name) -> comp_hot c prefix name (Int 0)
 
   | Var name ->
     (match resolve c name with
@@ -239,6 +287,16 @@ let rec comp_expr (c : ctx) (e : expr) : code =
   | Un (Neg, FLit f) -> let v = Float (-.f) in fun _ -> v
   | Un (Neg, x) -> let g = comp_expr c x in fun fr -> neg (g fr)
   | Un (Not, x) -> let g = comp_expr c x in fun fr -> Bool (not (as_bool (g fr)))
+
+  (* The neutral value is the operator's identity, so it is known here and
+     nowhere else: 0 for `+`, 1 for `*`, [] for `$+`, "" for juxtaposition. *)
+  | Bin (op, Hot (px, n), b) when op <> And && op <> Or ->
+    let ga = comp_hot c px n (neutral_of_op op) and gb = comp_expr c b in
+    let f = bin_fn op in
+    fun fr -> f (ga fr) (gb fr)
+  | Append (Hot (px, n), v) ->
+    let ga = comp_hot c px n (Arr [||]) and gv = comp_expr c v in
+    fun fr -> append (ga fr) (gv fr)
 
   | Bin (And, a, b) ->
     let ga = comp_expr c a and gb = comp_expr c b in
@@ -518,7 +576,10 @@ let rec comp_expr (c : ctx) (e : expr) : code =
 
   | BaseConv (b, x) -> let g = comp_expr c x in fun fr -> base_conv b (g fr)
   | Concat items ->
-    let cs = Array.of_list (List.map (comp_expr c) items) in
+    (* Juxtaposition builds a string, so a hot variable in it starts as "". *)
+    let cs = Array.of_list (List.map (function
+        | Hot (px, n) -> comp_hot c px n (Str "")
+        | e -> comp_expr c e) items) in
     fun fr ->
       let buf = Buffer.create 64 in
       Array.iter (fun g -> Buffer.add_string buf (display (g fr))) cs;
@@ -928,6 +989,9 @@ and comp_store (c : ctx) (lv : lvalue) : (frame -> value -> unit) =
        | RConst _ -> cerr "cannot reassign constant '%s'" name
        | RFunc _ -> cerr "cannot assign to function '%s'" name
        | RNone -> let i = declare c name in fun fr v -> fr.slots.(i) <- v)
+  | LHot (prefix, name) ->
+    let i = hot_slot c prefix name in
+    fun fr v -> fr.slots.(i) <- v
   | LIndex (base, idx) ->
     let gb = comp_lvalue_read c base and gi = comp_expr c idx in
     fun fr v ->
@@ -941,6 +1005,7 @@ and comp_store (c : ctx) (lv : lvalue) : (frame -> value -> unit) =
    aggregate, never a copy. *)
 and comp_lvalue_read (c : ctx) (lv : lvalue) : code =
   match lv with
+  | LHot (prefix, name) -> comp_hot c prefix name (Int 0)
   | LVar name ->
     (match resolve c name with
      | RSlot i -> fun fr -> Array.unsafe_get fr.slots i
@@ -960,12 +1025,27 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
 
   | Assign (LVar name, e) when lookup_local c name = None
                             && (match resolve c name with RNone -> true | _ -> false) ->
-    (* First mention of a name declares it. *)
+    (* First mention of a name declares it -- but the right-hand side is
+       compiled first, because it may be what declares it: in
+       `total = °total + item` the `°total` anchors the slot above the loop,
+       and deciding before compiling would create a second one inside it. *)
     let g = comp_expr c e in
     let cp = needs_copy e in
-    let i = declare c name in
-    if cp then fun fr -> fr.slots.(i) <- copy_val (g fr)
-    else fun fr -> fr.slots.(i) <- g fr
+    (match resolve c name with
+     | RSlot i -> if cp then fun fr -> fr.slots.(i) <- copy_val (g fr)
+       else fun fr -> fr.slots.(i) <- g fr
+     | _ ->
+       let i = declare c name in
+       if cp then fun fr -> fr.slots.(i) <- copy_val (g fr)
+       else fun fr -> fr.slots.(i) <- g fr)
+
+  (* `°resultado = resultado ch` mentions the variable on both sides, so the
+     slot has to exist before the right-hand side is compiled -- the opposite
+     order to an ordinary assignment. *)
+  | Assign (LHot (px, n), e) ->
+    let st = comp_store c (LHot (px, n)) in
+    let g = comp_expr c e in
+    if needs_copy e then fun fr -> st fr (copy_val (g fr)) else fun fr -> st fr (g fr)
 
   | Assign (lv, e) ->
     let g = comp_expr c e in
@@ -984,6 +1064,13 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
       let i = declare ~is_const:true c name in
       fun fr -> fr.slots.(i) <- copy_val (g fr)
     end
+
+  | OpAssign (LHot (px, n), op, e) ->
+    let g = comp_expr c e in
+    let rd = comp_hot c px n (neutral_of_op op) in
+    let st = comp_store c (LHot (px, n)) in
+    let f = bin_fn op in
+    fun fr -> st fr (f (rd fr) (g fr))
 
   | OpAssign (LVar name, op, e) ->
     let g = comp_expr c e in
@@ -1245,7 +1332,9 @@ and body_jumps stmts =
   List.exists ex_s stmts
 
 and comp_loop c label head body =
+  let above = List.hd c.scopes in
   push_scope c;
+  c.loops <- (List.hd c.scopes, above) :: c.loops;
   (* The iterator reuses an existing outer variable when one exists, which is
      why it survives the loop in that case. *)
   let iter_slot name =
@@ -1263,6 +1352,7 @@ and comp_loop c label head body =
       `Range (iter_slot v, ga, gb, gs)
   in
   let b = comp_block c body in
+  c.loops <- (match c.loops with _ :: t -> t | [] -> []);
   pop_scope c;
   let jumps = body_jumps body in
 

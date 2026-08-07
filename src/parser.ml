@@ -623,6 +623,8 @@ and parse_primary p =
     end;
     expect p TRParen ")";
     ModCall (s, fn, List.rev !args)
+  | THot -> Hot (true, ident p)
+  | TIdent s when peek p = THot -> ignore (advance p); Hot (false, s)
   | TIdent s -> Var s
   | TUnderscore -> Var "_"
   | TMatch -> p.pos <- p.pos - 1; parse_match p
@@ -737,7 +739,14 @@ and parse_block p =
   List.rev !acc
 
 and parse_lvalue p =
-  let base = LVar (ident p) in
+  let base =
+    if peek p = THot then begin ignore (advance p); LHot (true, ident p) end
+    else begin
+      let n = ident p in
+      if peek p = THot then begin ignore (advance p); LHot (false, n) end
+      else LVar n
+    end
+  in
   let lv = ref base in
   while peek p = TLBracket do
     ignore (advance p);
@@ -774,9 +783,13 @@ and parse_stmt p =
     if is_delimiter (peek p) || starts_statement (peek p) && peek p <> TMatch then Ret None
     (* `<~ param " [processed]"` concatenates, exactly as `=` and `>>` do. *)
     else Ret (Some (parse_assign_rhs p))
+  | THot -> parse_assign_like p
   | _ when is_destructure p -> parse_destructure p
   | TIdent _ when is_func_decl p -> parse_func p
-  | TIdent _ ->
+  | TIdent _ -> parse_assign_like p
+  | _ -> ExprStmt (parse_expr p)
+
+and parse_assign_like p =
     let save = p.pos in
     let lv = parse_lvalue p in
     (match peek p with
@@ -794,7 +807,6 @@ and parse_stmt p =
      | TInc -> ignore (advance p); IncDec (lv, 1)
      | TDec -> ignore (advance p); IncDec (lv, -1)
      | _ -> p.pos <- save; ExprStmt (parse_expr p))
-  | _ -> ExprStmt (parse_expr p)
 
 (* The right-hand side of an assignment uses the same juxtaposition rule as
    `>>`: `full = first " " last` concatenates three items.  Items must sit on

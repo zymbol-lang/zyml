@@ -64,6 +64,9 @@ type expr =
   | PropE of expr                         (* x$!! — early-return if error *)
   | Shell of expr                         (* <\ cmd \>    *)
   | TermSize                              (* >>?  -> [rows, cols] *)
+  (* `°x` / `x°`: auto-initialised to the neutral value on first use.  The
+     position decides the scope it is anchored to, not the value. *)
+  | Hot of bool * string                  (* true = prefix `°x` *)
   | ModCall of string * string * expr list  (* alias::fn(args) *)
   | ModConst of string * string             (* alias.CONST     *)
 
@@ -102,6 +105,7 @@ and lbody = LExpr of expr | LBlock of stmt list
 
 and lvalue =
   | LVar of string
+  | LHot of bool * string
   | LIndex of lvalue * expr
 
 and param = { pname : string; pout : bool }
