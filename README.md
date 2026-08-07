@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-366%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-388%2F532-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -124,7 +124,7 @@ zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
 **Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**366 identical, 10 differing, 156 not yet supported.**
+**388 identical, 10 differing, 134 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
@@ -167,7 +167,11 @@ early · **`std/math`** (22 functions, `PI`, `E`, with the reference engine's
 mixed return types: `abs`/`max`/`min` preserve the argument type, everything
 else widens to Float) · **`std/io`**, **`std/json`** (decode, encode,
 `decode_map` key renaming), **`std/random`**, **`std/term`** (which measures
-terminal *columns*, so a CJK ideograph counts two) · **modules** — `# name { }` declaration, `<#` import with
+terminal *columns*, so a CJK ideograph counts two) · **TUI primitives** —
+`>>!` clear, `>>?` terminal size (answering the conventional `[24, 80]` with no
+TTY so a piped layout still runs), `>>~` positioned output with sparse slots
+and ANSI styling, `>>|` alternate-screen block · **destructuring** — `[a, *rest]`,
+`(x, y)`, `(name: n)`, overwriting rather than shadowing · **modules** — `# name { }` declaration, `<#` import with
 alias, `#>` export with renaming and re-export (`alias::fn`, `alias.CONST`),
 `alias::fn()` calls resolved at compile time, `alias.CONST`, private mutable
 module state that persists across calls, and state identity per *file path* so
@@ -181,13 +185,11 @@ execution.
 
 No single large blocker is left.  Ranked by how many corpus files each blocks:
 
-1. **Tensor syntax** (~9 files).
-2. **TUI primitives** — `>>!`, `>>?`, `>>~`, `>>|`, `<<|`, `<<|?` (~8).
-3. **`°` hot definition operator** (~7).
-4. **`std/net` and `std/db`** — the two `std` modules still missing; both need
-   an external dependency (HTTP, ODBC) rather than more OCaml.
-5. **Destructuring assignment**, typed input (`<< ###(4) "p" v`), script exec
-   `</ />`.
+1. **`°` hot definition operator** (~7 files).
+2. **`<<|` / `<<|?` key input** — needs raw mode; the rest of the TUI set is in.
+3. **`std/net` and `std/db`** — both need an external dependency (HTTP, ODBC)
+   rather than more OCaml.
+4. **Typed input** (`<< ###(4) "p" v`), script exec `</ />`.
 
 ## The reference engines disagree with each other
 

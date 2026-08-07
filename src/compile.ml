@@ -407,6 +407,20 @@ let rec comp_expr (c : ctx) (e : expr) : code =
 
   (* ------------------------------------------------------- casts and format *)
 
+  (* `>>?` — [rows, cols].  With no terminal attached there is nothing to
+     measure, so it answers the conventional [24, 80] rather than failing: a
+     layout written against `>>?` stays runnable when piped. *)
+  | TermSize ->
+    fun _ ->
+      let default = Arr [| Int 24; Int 80 |] in
+      if not (Unix.isatty Unix.stdout) then default
+      else begin
+        match int_of_string_opt (Sys.getenv_opt "LINES" |> Option.value ~default:""),
+              int_of_string_opt (Sys.getenv_opt "COLUMNS" |> Option.value ~default:"") with
+        | Some r, Some c when r > 0 && c > 0 -> Arr [| Int r; Int c |]
+        | _ -> default
+      end
+
   | Nav (base, spec) -> comp_nav c base spec
 
   (* `alias::fn(args)` resolves to the exported function at compile time, so a
@@ -1048,6 +1062,91 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
 
   (* A runtime directive: it emits nothing and binds nothing, it just switches
      the script every later conversion to text goes through. *)
+  (* TUI primitives are ANSI escape sequences on stdout; the corpus compares
+     them literally, so the exact bytes matter. *)
+  (* Destructuring overwrites an existing variable rather than shadowing it,
+     and a `_` slot leaves whatever is there untouched. *)
+  | Destructure (pat, e) ->
+    let g = comp_expr c e in
+    (match pat with
+     | DSeq slots ->
+       let stores = List.map (function
+           | DSkip -> `Skip
+           | DName n -> `One (comp_store c (LVar n))
+           | DRest n -> `Rest (comp_store c (LVar n))) slots in
+       fun fr ->
+         let items = match g fr with
+           | Arr a | Tup a | NTup (_, a) -> a
+           | v -> errk "Type" "cannot destructure %s" (type_name v)
+         in
+         let i = ref 0 in
+         List.iter (fun st ->
+             match st with
+             | `Skip -> incr i
+             | `One store ->
+               if !i < Array.length items then store fr (copy_val items.(!i));
+               incr i
+             | `Rest store ->
+               let n = Array.length items - !i in
+               store fr (Arr (Array.map copy_val
+                                (Array.sub items !i (max n 0))));
+               i := Array.length items)
+           stores
+     | DFields fields ->
+       let stores = List.map (fun (f, n) -> (f, comp_store c (LVar n))) fields in
+       fun fr ->
+         let v = g fr in
+         List.iter (fun (f, store) -> store fr (copy_val (field_get v f))) stores)
+
+  | ClearScreen -> fun _ -> emit "\027[2J\027[1;1H"
+
+  | OutputPos (slots, items) ->
+    let gs = List.map (Option.map (comp_expr c)) slots in
+    let cs = Array.of_list (List.map (comp_expr c) items) in
+    fun fr ->
+      (* A single non-empty slot may hold a whole position tuple. *)
+      let vals = match gs with
+        | [ Some g ] ->
+          (match g fr with
+           | Tup a | NTup (_, a) -> Array.to_list (Array.map (fun v -> Some v) a)
+           | v -> [ Some v ])
+        | gs -> List.map (Option.map (fun g -> g fr)) gs
+      in
+      let nth k = match List.nth_opt vals k with Some (Some v) -> Some v | _ -> None in
+      let as_i = function Some (Int i) -> Some i | Some (Float f) -> Some (int_of_float f) | _ -> None in
+      (match as_i (nth 0), as_i (nth 1) with
+       (* Row and column move the cursor only when both are present. *)
+       | Some r, Some col -> emit (Printf.sprintf "\027[%d;%dH" r col)
+       | _ -> ());
+      (match as_i (nth 2) with
+       | Some bks when bks > 0 ->
+         if bks land 1 <> 0 then emit "\027[1m";
+         if bks land 2 <> 0 then emit "\027[3m";
+         if bks land 4 <> 0 then emit "\027[4m"
+       | _ -> ());
+      (match as_i (nth 3) with
+       | Some fg when fg > 0 -> emit (Printf.sprintf "\027[38;5;%dm" fg)
+       | _ -> ());
+      (match as_i (nth 4) with
+       | Some bg when bg > 0 -> emit (Printf.sprintf "\027[48;5;%dm" bg)
+       | _ -> ());
+      Array.iter (fun g -> emit (display (g fr))) cs
+
+  | TuiBlock body ->
+    push_scope c;
+    let b = comp_block c body in
+    pop_scope c;
+    (* Alternate screen in, and out again on every path — including an error,
+       or the terminal is left unusable. *)
+    fun fr ->
+      if not (Unix.isatty Unix.stdout) then
+        errk "IO" ">>| needs a terminal; stdout is not a TTY";
+      emit "\027[?1049h";
+      flush_out ();
+      let restore () = emit "\027[?1049l"; flush_out () in
+      (try b fr with e -> restore (); raise e);
+      restore ()
+
   | NumeralMode b -> fun _ -> numeral_base := b
 
   | Import (path, alias) ->

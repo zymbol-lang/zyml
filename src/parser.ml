@@ -133,7 +133,7 @@ let is_delimiter = function
 let starts_statement = function
   | TOut | TIn | TIf | TMatch | TAt | TAtLabel _ | TAtBreak | TAtCont | TAtSleep
   | TAtLabelBreak _ | TAtLabelCont _ | TRet | TNewline | TRBrace | TEOF
-  | TBackslash | TSemi -> true
+  | TBackslash | TSemi | TOutClear | TOutPos | TOutGate -> true
   | _ -> false
 
 (* Decide whether a postfix `[...]` is navigation or a plain 1-D index: it is
@@ -156,6 +156,32 @@ let is_nav_index p =
             incr k
           done;
           !res))
+
+(* `[a, b] = …` and `(a, b) = …` are destructuring; `[1,2]` and `(1+2)` are
+   ordinary expressions.  They are told apart by scanning to the matching
+   bracket and checking for a following `=` (but not `==`). *)
+let is_destructure p =
+  match peek p with
+  | TLBracket | TLParen ->
+    let opener = peek p in
+    let closer = if opener = TLBracket then TRBracket else TRParen in
+    let depth = ref 0 and k = ref p.pos and res = ref false and fin = ref false in
+    while not !fin do
+      (match (if !k < Array.length p.toks then p.toks.(!k).tok else TEOF) with
+       | t when t = opener -> incr depth
+       | t when t = closer ->
+         decr depth;
+         if !depth = 0 then begin
+           res := (if !k + 1 < Array.length p.toks
+                   then p.toks.(!k + 1).tok = TAssign else false);
+           fin := true
+         end
+       | TEOF -> fin := true
+       | _ -> ());
+      incr k
+    done;
+    !res
+  | _ -> false
 
 (* `$^ (a, b -> body)` spells a two-argument comparator without the usual
    parentheses around the parameter list, so it needs its own lookahead. *)
@@ -463,6 +489,11 @@ and parse_coll_postfix p (e : expr) : expr option =
 (* An operand for a collection operator: unary and structural postfix only. *)
 and parse_coll_operand p =
   match peek p with
+  (* A bare lambda needs no parentheses here: `t$> v -> v * 2` is as valid as
+     `t$> (v -> v * 2)`, and the corpus uses both. *)
+  | TIdent name when peek_at p 1 = TArrow ->
+    p.pos <- p.pos + 2;
+    Lambda ([ name ], parse_lambda_body p)
   | TMinus -> ignore (advance p); Un (Neg, parse_coll_operand p)
   | TNot -> ignore (advance p); Un (Not, parse_coll_operand p)
   | TCastFloat -> ignore (advance p); Cast (ToFloat, parse_coll_operand p)
@@ -483,6 +514,7 @@ and parse_coll_operand p =
     let fin = ref false in
     while not !fin do
       match peek p with
+      | TLBracket when is_nav_index p -> e := parse_nav p !e
       | TLBracket ->
         ignore (advance p);
         let idx = parse_expr p in
@@ -594,6 +626,7 @@ and parse_primary p =
   | TIdent s -> Var s
   | TUnderscore -> Var "_"
   | TMatch -> p.pos <- p.pos - 1; parse_match p
+  | TOutSize -> TermSize
   (* `(name: expr, ...)` is a named tuple; a `:` right after the first
      identifier is what distinguishes it from a parenthesised expression. *)
   | TLParen when (match peek p, peek_at p 1 with TIdent _, TColon -> true | _ -> false) ->
@@ -729,6 +762,9 @@ and parse_stmt p =
   | TAtSleep -> ignore (advance p); Sleep (parse_expr p)
   | TBackslash -> ignore (advance p); Discard (ident p)
   | TTry -> parse_try p
+  | TOutClear -> ignore (advance p); ClearScreen
+  | TOutPos -> parse_output_pos p
+  | TOutGate -> ignore (advance p); TuiBlock (parse_block p)
   | TNumeralMode b -> ignore (advance p); NumeralMode b
   | TImport -> parse_import p
   | TExport -> parse_export p
@@ -738,6 +774,7 @@ and parse_stmt p =
     if is_delimiter (peek p) || starts_statement (peek p) && peek p <> TMatch then Ret None
     (* `<~ param " [processed]"` concatenates, exactly as `=` and `>>` do. *)
     else Ret (Some (parse_assign_rhs p))
+  | _ when is_destructure p -> parse_destructure p
   | TIdent _ when is_func_decl p -> parse_func p
   | TIdent _ ->
     let save = p.pos in
@@ -851,6 +888,72 @@ and parse_try p =
   let fin = if peek p = TFinally then begin ignore (advance p); Some (parse_block p) end
     else None in
   Try (body, List.rev !catches, fin)
+
+(* `>>~ (row, col, BKS, fg, bg) > items` — any slot may be left empty, so the
+   commas are position markers and an absent slot means "leave unchanged". *)
+and parse_destructure p =
+  let closer = if peek p = TLBracket then TRBracket else TRParen in
+  ignore (advance p);
+  (* A `name:` in the first slot marks a named-tuple pattern. *)
+  let named = (match peek p, peek_at p 1 with TIdent _, TColon -> true | _ -> false) in
+  let pat =
+    if named then begin
+      let fields = ref [] in
+      let one () =
+        let f = ident p in
+        expect p TColon ":";
+        (f, ident p)
+      in
+      fields := [ one () ];
+      while peek p = TComma do ignore (advance p); fields := one () :: !fields done;
+      DFields (List.rev !fields)
+    end else begin
+      let slots = ref [] in
+      let one () =
+        if peek p = TUnderscore then begin ignore (advance p); DSkip end
+        else if peek p = TStar then begin ignore (advance p); DRest (ident p) end
+        else DName (ident p)
+      in
+      if peek p <> closer then begin
+        slots := [ one () ];
+        while peek p = TComma do ignore (advance p); slots := one () :: !slots done
+      end;
+      DSeq (List.rev !slots)
+    end
+  in
+  expect p closer "']' or ')'";
+  expect p TAssign "'='";
+  Destructure (pat, parse_assign_rhs p)
+
+and parse_output_pos p =
+  expect p TOutPos "'>>~'";
+  let slots =
+    if peek p = TLParen then begin
+      ignore (advance p);
+      let acc = ref [] in
+      let fin = ref false in
+      (* An empty slot shows up as a comma with nothing before it. *)
+      while not !fin do
+        if peek p = TComma then begin acc := None :: !acc; ignore (advance p) end
+        else if peek p = TRParen then fin := true
+        else begin
+          acc := Some (parse_expr p) :: !acc;
+          if peek p = TComma then ignore (advance p) else fin := true
+        end
+      done;
+      expect p TRParen ")";
+      List.rev !acc
+    end else
+      (* A tuple variable stands for the whole position. *)
+      [ Some (parse_postfix p (parse_primary p)) ]
+  in
+  expect p TGt "'>'";
+  let ln = line p in
+  let items = ref [] in
+  while line p = ln && not (is_delimiter (peek p)) && not (starts_statement (peek p)) do
+    items := parse_out_item p :: !items
+  done;
+  OutputPos (slots, List.rev !items)
 
 and parse_output p =
   ignore (advance p);                                    (* >> *)

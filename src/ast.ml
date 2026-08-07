@@ -63,6 +63,7 @@ type expr =
   | IsErr of expr                         (* x$!           *)
   | PropE of expr                         (* x$!! — early-return if error *)
   | Shell of expr                         (* <\ cmd \>    *)
+  | TermSize                              (* >>?  -> [rows, cols] *)
   | ModCall of string * string * expr list  (* alias::fn(args) *)
   | ModConst of string * string             (* alias.CONST     *)
 
@@ -89,6 +90,11 @@ and navspec =
   | NStruct of navstep list list list     (* arr[[a,b];[c]]  -> array of arrays *)
 
 and cast = ToFloat | ToIntRound | ToIntTrunc
+
+and dslot = DName of string | DRest of string | DSkip
+and dpat =
+  | DSeq of dslot list                    (* [a, b] or (a, b) *)
+  | DFields of (string * string) list     (* (name: n, age: a) *)
 
 and ipart = ILit_text of string | ILit_var of string
 
@@ -121,6 +127,12 @@ and stmt =
   | FuncDecl of string * param list * stmt list
   | Sleep of expr
   | Discard of string                    (* \ x — explicit lifetime end *)
+  (* `[a, *rest] = arr` / `(x, y) = tup` / `(name: n) = nt`.  A slot is a
+     variable name, a rest collector, or `_` to discard the position. *)
+  | Destructure of dpat * expr
+  | ClearScreen                           (* >>!              *)
+  | OutputPos of expr option list * expr list  (* >>~ (r,c,…) > items *)
+  | TuiBlock of stmt list                 (* >>| { … }        *)
   | NumeralMode of int                    (* #d0d9#           *)
   | Import of string * string             (* <# path => alias *)
   | ModuleDecl of string * stmt list      (* # name { ... }   *)
