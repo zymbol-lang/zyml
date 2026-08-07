@@ -1,4 +1,26 @@
-# zyml — a closure-compiling Zymbol engine in OCaml
+<p align="center">
+  <img src="logo.png" alt="Zymbol-Lang" width="180"/>
+</p>
+
+<h1 align="center">zyml — Zymbol Closure-Compiling Engine</h1>
+
+<p align="center">
+  A third engine for Zymbol, written in OCaml.<br/>
+  The whole program becomes native closures before a single statement runs.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-v0.1.0-informational?style=flat-square"/>
+  <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
+  <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
+  <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-344%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
+</p>
+
+---
+
+## What is zyml?
 
 An experimental third engine for [Zymbol](https://github.com/zymbol-lang/interpreter),
 alongside the Rust tree-walker and the Rust register VM.  It exists to test one
