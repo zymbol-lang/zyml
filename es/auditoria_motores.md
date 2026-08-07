@@ -36,8 +36,15 @@ Versión auditada: `zymbol 0.0.8`. Fecha: 2026-08-07.
 
 ## Resumen ejecutivo
 
-**11 hallazgos.** Seis son divergencias reales entre motores; el gate de
+**12 hallazgos.** Siete son divergencias reales entre motores; el gate de
 paridad `tests/scripts/vm_compare.sh` no detecta ninguna de ellas.
+
+> **Corrección (2026-08-07).** La versión inicial de este documento afirmaba en
+> B5 que *"el value flow no existe, solo hay exception flow"*. **Era falso.**
+> Los valores de error sí existen; lo que no existe es una forma de construir
+> uno desde el lenguaje puro, y por eso todas las sondas escritas a mano
+> devolvían `#0`. `std/io` sí los produce. B5 está reescrito abajo, y la
+> comprobación destapó un hallazgo nuevo, A7.
 
 | # | Hallazgo | TW | VM | JS | Gravedad |
 |---|---|---|---|---|---|
@@ -47,11 +54,12 @@ paridad `tests/scripts/vm_compare.sh` no detecta ninguna de ellas.
 | A4 | Desbordamiento de `^` | ✓ | ✗ | ✗ | **Alta** |
 | A5 | `$??` con patrón vacío | ✗ | ✓ | ✓ | Media |
 | A6 | `$/` con separador vacío | ~ | ~ | ~ | Media |
+| A7 | `#?` sobre un valor de error | ✓ | ✗ | — | **Alta** |
 | B1 | `0x41` es Char, no Int | — | — | — | Doc |
 | B2 | `$[0..n]` acepta el 0, `arr[0]` no | — | — | — | Diseño |
 | B3 | Yuxtaposición concatena en `=`, `:=` y `<~` | — | — | — | Doc |
 | B4 | `#.N` devuelve Float, `#,.N` devuelve String | — | — | — | Doc |
-| B5 | `$!!` no propaga nada | ✗ | ✗ | ✗ | **Alta** |
+| B5 | `$!!` no propaga *en el lenguaje puro* | — | — | — | Doc |
 
 `✓` = comportamiento que parece correcto · `✗` = incorrecto o divergente ·
 `~` = los tres difieren · `—` = los tres coinciden, el problema es de
@@ -233,6 +241,32 @@ optan por lo primero, el tree-walker por lo segundo.
 > quien escribe el código, y devolver una lista de posiciones para un patrón
 > que el usuario probablemente construyó por accidente esconde el error.
 
+## A7 — `#?` sobre un valor de error da 0 en la VM
+
+**Gravedad: alta.** Hallazgo nuevo, aparecido al comprobar B5.
+
+```zymbol
+<# std/io => io
+x = io::read("no_existe.txt")
+>> x#? ¶
+```
+
+| Motor | Resultado |
+|---|---|
+| TW | `(##IO, **38**, ##IO(No such file or directory (os error 2)))` |
+| VM | `(##IO, **0**, ##IO(No such file or directory (os error 2)))` |
+
+`GUIDE.md` §18 dice que para un Error el `count` es *"length of the error
+message"*. El mensaje tiene 38 caracteres, que es lo que da el tree-walker. La
+VM devuelve 0 — no mide nada.
+
+Es la misma familia que A1: `#?` es el operador con más divergencias de todo el
+lenguaje, y en cada una un motor distinto es el que falla.
+
+> **Recomendación**: corregir la VM. Y, ya que `#?` acumula A1 y A7, revisar su
+> implementación entera en los tres motores contra la tabla de §18 en vez de
+> caso por caso.
+
 ## A6 — `$/` con separador vacío: los tres motores difieren
 
 **Gravedad: media.**
@@ -366,10 +400,11 @@ Eso tampoco está documentado y es imposible de adivinar.
 > del resultado** (Float vs String), y documentar el formato de la mantisa de
 > `#^`.
 
-## B5 — `$!!` no propaga nada
+## B5 — `$!!` no propaga nada *en el lenguaje puro*
 
-**Gravedad: alta**, porque el `GUIDE` describe con detalle una funcionalidad
-que no ocurre.
+**Gravedad: documentación.** Reescrito tras la corrección de arriba: el
+mecanismo funciona, pero solo se puede activar desde `std/*`, y el `GUIDE` no
+lo dice.
 
 `GUIDE.md` §16 dice:
 
@@ -402,10 +437,9 @@ f(v) { ? v < 0 { v$!! } <~ v * 2 }
 | JS | `-6` |
 | ML | `-6` |
 
-Los cuatro coinciden en **no** hacer lo documentado. La razón es que `$!!`
-solo actúa si el valor *es* un error, y en la práctica un valor de error nunca
-llega a una variable: los errores viajan como excepciones, no como valores.
-`$!` lo confirma —siempre devuelve `#0`:
+Los cuatro coinciden en no hacer lo que el ejemplo sugiere — pero no porque el
+mecanismo falte, sino porque **`value` nunca es un error**. `$!!` solo actúa si
+el valor *es* un error, y nada en el lenguaje puro construye uno:
 
 ```zymbol
 x = 42
@@ -413,23 +447,29 @@ x = 42
 >> ([1,2]$!) ¶    // → #0
 ```
 
-No hay forma, desde el lenguaje, de construir un valor para el que `$!` dé
-`#1`. El "value flow" que §16 contrasta con el "exception flow" **no existe**:
-solo hay exception flow.
+En cambio, con `std/*` de por medio funciona exactamente como está documentado:
 
-Esto explica por qué `zyml` puede tener `$!`/`$!!` como stubs y aun así pasar
-la paridad: coincide con la referencia porque la referencia tampoco los
-implementa de forma observable.
+```zymbol
+<# std/io => io
+x = io::read("no_existe.txt")
+>> (x$!) ¶                          // → #1   ← es un valor de error
+f(v) { ? v$! { v$!! } <~ "ok" }
+>> f(x) ¶                           // → ##IO(No such file...)  ← propagó
+>> f(42) ¶                          // → ok
+```
 
-> **Recomendación**: elegir una de tres.
-> 1. **Implementar** valores de error de primera clase (funciones que devuelven
->    un error en vez de lanzarlo). Es la opción más cara y la que hace cierta
->    la §16.
-> 2. **Deprecar** `$!` y `$!!` y borrar §16 *Exception Flow vs Value Flow*.
-> 3. **Documentar** que hoy son no-ops reservados para una versión futura.
->
-> Lo que no debería seguir es que la guía enseñe con ejemplos un mecanismo que
-> ningún motor ejecuta.
+Los cuatro motores coinciden en esto.
+
+Así que el "value flow" de §16 **sí existe**; lo que falta es la frase que diga
+de dónde salen los valores de error. Hoy solo los produce `std/*`: `io::read`
+sobre un fichero inexistente, `json::decode` sobre entrada inválida, y las
+funciones de `std/db`. Un `? v < 0 { v$!! }` como el del ejemplo de §16 no
+propaga nada, porque `v` es un número, no un error.
+
+> **Recomendación**: añadir a §16 una subsección *De dónde salen los valores de
+> error*, con la lista de funciones que los devuelven, y sustituir el ejemplo de
+> `process(value)` — que no propaga— por uno con `std/io`, que sí. Opcionalmente,
+> dar al lenguaje una forma de construir un error, que hoy no tiene.
 
 ---
 
@@ -515,13 +555,14 @@ red.
 | # | Qué hace `zyml` hoy | Acción |
 |---|---|---|
 | A1 | Replica el bug del TW (bytes) | Seguir al TW cuando se corrija |
+| A7 | Correcto (longitud del mensaje) | Ninguna |
 | A2 | Correcto (`#1`) | Ninguna |
 | A3 | Como VM y JS (`0`) | Seguir la decisión que se tome |
 | A4 | Wraparound silencioso | Seguir la política que se defina |
 | A5 | Como TW (`[]`) | Ninguna |
 | A6 | Error explícito | Revisar según la decisión |
 | B1–B4 | Coincide con la referencia | Ninguna |
-| B5 | Stubs, igual que la referencia | Implementar si se elige la opción 1 |
+| B5 | **Implementado**: `Err` es un valor, `$!`/`$!!` funcionan | — |
 | C1 | **Ya corregido** (regla de línea) | — |
 
 `zyml` replica deliberadamente los bugs A1 y A4 porque su definición de
@@ -529,6 +570,10 @@ correctitud es "salida byte a byte idéntica a `zymbol run`". Esa es la
 propiedad que hace útil su suite de paridad, y también la que hace que herede
 los defectos del motor de referencia. Cuando se corrija Rust, se corrige
 `zyml`, y la suite lo verifica sola.
+
+B5 dejó de ser un stub al implementarse `std/*`: `Err` es ahora un constructor
+de valor, `$!` lo detecta y `$!!` lo devuelve al llamante. Fue precisamente esa
+implementación la que obligó a corregir el diagnóstico original.
 
 Un bug **propio** detectado durante esta auditoría, no compartido con ningún
 otro motor:
