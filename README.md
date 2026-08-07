@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-344%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-366%2F532-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -124,7 +124,7 @@ zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
 **Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**344 identical, 10 differing, 178 not yet supported.**
+**366 identical, 10 differing, 156 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
@@ -137,9 +137,8 @@ The 10 differences are all accounted for, and none is a wrong answer:
   argument type inference, undefined-variable detection inside lambdas,
   underscore-variable scope rules.  Those programs are rejected before running.
   zyml has no separate analysis pass, so it runs them.
-* **4** concern errors as *values* (`$!`, `$!!`).  In this engine errors travel
-  only as exceptions, so `$!` is constantly `#0` and `$!!` is the identity.
-  The `!?`/`:!`/`:>` control flow itself is implemented and matches.
+* **4** are error-value edge cases and error *message* wording, where the kind
+  matches but the text is this engine's own.
 
 ## Implemented
 
@@ -162,7 +161,13 @@ access and `$~` by position or field name · **`!?` / `:!` / `:>` try, catch
 number formatting `#|x|` `#.N|x|` `#!N|x|` `#,|x|` `#^|x|` and their inline
 precision forms · base conversion `0x|n|` `0b|n|` `0o|n|` `0d|n|` · base-prefixed
 character literals · `#?` type metadata · `|>` pipe with `_` placeholder · `;`
-as a separator · **modules** — `# name { }` declaration, `<#` import with
+as a separator · **first-class error values** — `std/*` returns `##IO(…)` rather
+than raising, and `$!` tests for one while `$!!` returns it to the caller
+early · **`std/math`** (22 functions, `PI`, `E`, with the reference engine's
+mixed return types: `abs`/`max`/`min` preserve the argument type, everything
+else widens to Float) · **`std/io`**, **`std/json`** (decode, encode,
+`decode_map` key renaming), **`std/random`**, **`std/term`** (which measures
+terminal *columns*, so a CJK ideograph counts two) · **modules** — `# name { }` declaration, `<#` import with
 alias, `#>` export with renaming and re-export (`alias::fn`, `alias.CONST`),
 `alias::fn()` calls resolved at compile time, `alias.CONST`, private mutable
 module state that persists across calls, and state identity per *file path* so
@@ -176,15 +181,13 @@ execution.
 
 No single large blocker is left.  Ranked by how many corpus files each blocks:
 
-1. **The `std/*` library** — `std/math`, `std/json`, `std/io`, `std/random`,
-   `std/term`, `std/net`, `std/db` (~24 files).  The module *mechanism* works;
-   these are the built-in modules it would resolve to.
-2. **Tensor syntax** (~9 files).
-3. **TUI primitives** — `>>!`, `>>?`, `>>~`, `>>|`, `<<|`, `<<|?` (~8).
-4. **`°` hot definition operator** (~7).
+1. **Tensor syntax** (~9 files).
+2. **TUI primitives** — `>>!`, `>>?`, `>>~`, `>>|`, `<<|`, `<<|?` (~8).
+3. **`°` hot definition operator** (~7).
+4. **`std/net` and `std/db`** — the two `std` modules still missing; both need
+   an external dependency (HTTP, ODBC) rather than more OCaml.
 5. **Destructuring assignment**, typed input (`<< ###(4) "p" v`), script exec
    `</ />`.
-6. **Errors as values** — `$!` and `$!!` are stubs, as noted above.
 
 ## The reference engines disagree with each other
 
@@ -207,7 +210,9 @@ verifies it.
 
 * No semantic analysis pass, so the diagnostics in the section above are not
   reproduced and no `warning:` lines are emitted.
-* Error *messages* are this engine's own wording.  The error *kind* matches
+* Error *messages* are this engine's own wording, except in `std/io`, where
+  the corpus compares them and they reproduce Rust's `io::Error` rendering
+  (`No such file or directory (os error 2)`).  The error *kind* matches
   (`##Div`, `##Index`, `##Type`), which is what `:! ##Kind` selects on, and
   `_err` renders as `##Kind(message)`.
 * Character values are Unicode **code points**, not grapheme clusters.  A

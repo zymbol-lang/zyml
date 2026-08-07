@@ -18,6 +18,11 @@ type value =
   | NTup of string array * value array   (* named tuple: (x: 1, y: 2) *)
   | Fun of funcval
   | Lam of lamval
+  (* A first-class error value: kind and message.  Only `std/*` produces these
+     -- there is no way to build one from the language itself -- but once one
+     exists it flows like any other value, which is what `$!` and `$!!` are
+     for. *)
+  | Err of string * string
   | Unit
 
 (* A named function.  Zymbol named functions have *isolated* scope: the body sees
@@ -253,9 +258,33 @@ let normalize_digits s =
     Buffer.contents b
   end
 
+(* Display width in terminal columns, which is not the character count: CJK
+   ideographs, Hangul and most emoji occupy two columns each.  `std/term` is
+   about layout, so it measures this rather than `$#`. *)
+let is_wide cp =
+  (cp >= 0x1100 && cp <= 0x115F)      (* Hangul Jamo                *)
+  || (cp >= 0x2E80 && cp <= 0x303E)   (* CJK radicals, punctuation  *)
+  || (cp >= 0x3041 && cp <= 0x33FF)   (* kana, CJK compatibility    *)
+  || (cp >= 0x3400 && cp <= 0x4DBF)   (* CJK ext A                  *)
+  || (cp >= 0x4E00 && cp <= 0x9FFF)   (* CJK unified                *)
+  || (cp >= 0xA000 && cp <= 0xA4CF)   (* Yi                         *)
+  || (cp >= 0xAC00 && cp <= 0xD7A3)   (* Hangul syllables           *)
+  || (cp >= 0xF900 && cp <= 0xFAFF)   (* CJK compatibility ideogr.  *)
+  || (cp >= 0xFE30 && cp <= 0xFE6F)   (* CJK compatibility forms    *)
+  || (cp >= 0xFF00 && cp <= 0xFF60)   (* fullwidth forms            *)
+  || (cp >= 0xFFE0 && cp <= 0xFFE6)
+  || (cp >= 0x1F300 && cp <= 0x1F64F) (* emoji                      *)
+  || (cp >= 0x1F900 && cp <= 0x1F9FF)
+  || (cp >= 0x20000 && cp <= 0x3FFFD) (* CJK ext B and beyond       *)
+
 (* ----------------------------------------------------------------- display *)
 
-let rec display v =
+(* Inside a collection, Unit renders as `()`; on its own it renders as nothing.
+   `>> ()` prints an empty line, but `[1, (), 3]` shows the hole. *)
+let rec display_nested v =
+  match v with Unit -> "()" | v -> display v
+
+and display v =
   match v with
   | Int i -> to_script (string_of_int i)
   | Float f -> to_script (float_repr f)
@@ -269,7 +298,7 @@ let rec display v =
     Buffer.add_char b '[';
     Array.iteri (fun i x ->
         if i > 0 then Buffer.add_string b ", ";
-        Buffer.add_string b (display x)) a;
+        Buffer.add_string b (display_nested x)) a;
     Buffer.add_char b ']';
     Buffer.contents b
   | Tup a ->
@@ -277,7 +306,7 @@ let rec display v =
     Buffer.add_char b '(';
     Array.iteri (fun i x ->
         if i > 0 then Buffer.add_string b ", ";
-        Buffer.add_string b (display x)) a;
+        Buffer.add_string b (display_nested x)) a;
     Buffer.add_char b ')';
     Buffer.contents b
   | NTup (names, vals) ->
@@ -287,9 +316,10 @@ let rec display v =
         if i > 0 then Buffer.add_string b ", ";
         Buffer.add_string b names.(i);
         Buffer.add_string b ": ";
-        Buffer.add_string b (display x)) vals;
+        Buffer.add_string b (display_nested x)) vals;
     Buffer.add_char b ')';
     Buffer.contents b
+  | Err (kind, msg) -> Printf.sprintf "##%s(%s)" kind msg
   | Fun f -> Printf.sprintf "<funct/%d>" f.arity
   | Lam l -> Printf.sprintf "<lambd/%d>" l.lparams
 
@@ -297,12 +327,14 @@ let type_name = function
   | Int _ -> "integer" | Float _ -> "float" | Bool _ -> "bool"
   | Str _ -> "string" | Chr _ -> "char" | Arr _ -> "array"
   | Tup _ | NTup _ -> "tuple"
-  | Fun _ -> "function" | Lam _ -> "lambda" | Unit -> "unit"
+  | Fun _ -> "function" | Lam _ -> "lambda" | Err _ -> "error" | Unit -> "unit"
 
 let type_symbol = function
   | Int _ -> "###" | Float _ -> "##." | Str _ -> "##\"" | Chr _ -> "##'"
   | Bool _ -> "##?" | Arr _ -> "##]" | Tup _ | NTup _ -> "##)"
   | Fun _ -> "##()" | Lam _ -> "##->" | Unit -> "##_"
+  (* The type of an error *is* its kind: ##IO, ##Index, ##Div. *)
+  | Err (kind, _) -> "##" ^ kind
 
 (* `x#?` yields the triple (type symbol, size, value).  "Size" means whatever
    counts for that type: the rendered length for numbers and strings, the
@@ -319,6 +351,9 @@ let type_meta v =
     | NTup (_, v) -> Array.length v
     | Fun f -> f.arity
     | Lam l -> l.lparams
+    (* Documented as "length of the error message" -- the message alone, not
+       the ##Kind(...) rendering. *)
+    | Err (_, msg) -> String.length msg
     | Unit -> 0
   in
   Tup [| Str (type_symbol v); Int size; v |]
@@ -681,6 +716,11 @@ let codepoint_of s =
   else
     ((b0 land 0x07) lsl 18) lor ((Char.code s.[1] land 0x3F) lsl 12)
     lor ((Char.code s.[2] land 0x3F) lsl 6) lor (Char.code s.[3] land 0x3F)
+
+(* Total display width of a string, in terminal columns. *)
+let display_width s =
+  Array.fold_left (fun acc ch ->
+      acc + (if is_wide (codepoint_of ch) then 2 else 1)) 0 (utf8_chars s)
 
 let to_int_trunc = function
   | Int i -> Int i

@@ -443,10 +443,7 @@ and parse_coll_postfix p (e : expr) : expr option =
     ignore (advance p);
     Some (Field (e, ident p))
   | TIsErr -> ignore (advance p); Some (IsErr e)
-  (* `$!!` propagates an error value to the caller.  Errors in this engine
-     travel as exceptions rather than as values, so there is nothing to
-     propagate here and the operator is the identity — see README. *)
-  | TPropErr -> ignore (advance p); Some e
+  | TPropErr -> ignore (advance p); Some (PropE e)
   | TDollarBracket ->
     ignore (advance p);
     let a = parse_add p in

@@ -61,6 +61,7 @@ type expr =
   | NTupLit of (string * expr) list       (* (x: 1, y: 2)  *)
   | Field of expr * string                (* tuple.field   *)
   | IsErr of expr                         (* x$!           *)
+  | PropE of expr                         (* x$!! — early-return if error *)
   | Shell of expr                         (* <\ cmd \>    *)
   | ModCall of string * string * expr list  (* alias::fn(args) *)
   | ModConst of string * string             (* alias.CONST     *)

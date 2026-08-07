@@ -413,13 +413,16 @@ let rec comp_expr (c : ctx) (e : expr) : code =
      module call costs exactly what a local call costs. *)
   | ModCall (alias, fn, args) ->
     let m = find_module c alias in
-    (match Hashtbl.find_opt m.mfuncs fn with
-     | None -> cerr "module '%s' does not export a function '%s'" alias fn
-     | Some f ->
+    let n = List.length args in
+    (* Overloads are rare but real (`math::log` takes one or two arguments), so
+       the arity is part of the lookup, not a check after it. *)
+    let candidates = Hashtbl.find_all m.mfuncs fn in
+    (match List.find_opt (fun (f : funcval) -> f.arity = n) candidates, candidates with
+     | None, [] -> cerr "module '%s' does not export a function '%s'" alias fn
+     | None, (f :: _) ->
+       cerr "'%s::%s' expects %d argument(s), got %d" alias fn f.arity n
+     | Some f, _ ->
        let argc = Array.of_list (List.map (comp_expr c) args) in
-       let n = Array.length argc in
-       if n <> f.arity then
-         cerr "'%s::%s' expects %d argument(s), got %d" alias fn f.arity n;
        let writers = out_writers c f args (alias ^ "::" ^ fn) in
        fun fr ->
          let slots = Array.make (max f.fslots 1) Unit in
@@ -449,9 +452,14 @@ let rec comp_expr (c : ctx) (e : expr) : code =
   | Field (e, name) ->
     let g = comp_expr c e in
     fun fr -> field_get (g fr) name
-  (* Errors never reach a value slot in this engine, so `$!` is constantly
-     false; the typed `:!` arms are the real mechanism. *)
-  | IsErr e -> let g = comp_expr c e in fun fr -> ignore (g fr); Bool false
+  | IsErr e ->
+    let g = comp_expr c e in
+    fun fr -> Bool (match g fr with Err _ -> true | _ -> false)
+  (* `$!!` returns an error value to the caller immediately; a non-error passes
+     straight through and execution continues. *)
+  | PropE e ->
+    let g = comp_expr c e in
+    fun fr -> (match g fr with Err _ as v -> raise (Zy_return v) | v -> v)
 
   | Match (scrut, arms) ->
     let gs = comp_expr c scrut in
@@ -552,7 +560,23 @@ and find_module c alias =
    reusing the cached module when the same file has already been loaded. *)
 and load_module (path : string) : modul =
   if String.length path >= 4 && String.sub path 0 4 = "std/" then
-    cerr "the standard library module '%s' is not implemented in this engine" path;
+    match Hashtbl.find_opt modules path with
+    | Some m -> m
+    | None ->
+      (match Stdlib_zy.find path with
+       | None ->
+         cerr "the standard library module '%s' is not implemented in this engine" path
+       | Some sm ->
+         let mconsts = Hashtbl.create 4 and mfuncs = Hashtbl.create 32 in
+         let mstate = Array.of_list (List.map snd sm.Stdlib_zy.sconsts) in
+         List.iteri (fun i (n, _) -> Hashtbl.replace mconsts n i) sm.Stdlib_zy.sconsts;
+         (* `add`, not `replace`: `math::log` exists at two arities and the call
+            site picks by argument count. *)
+         List.iter (fun (f : funcval) -> Hashtbl.add mfuncs f.fname f) sm.Stdlib_zy.sfuncs;
+         let m = { mname = path; mstate; mconsts; mfuncs } in
+         Hashtbl.replace modules path m;
+         m)
+  else
   let file =
     let p = if Filename.check_suffix path ".zy" then path else path ^ ".zy" in
     if Filename.is_relative p then Filename.concat !cur_dir p else p
@@ -797,7 +821,9 @@ and comp_lambda (c : ctx) params body : code =
   List.iter (fun p -> ignore (declare lc p)) params;
   let bodycode =
     match body with
-    | LExpr e -> let g = comp_expr lc e in fun fr -> g fr
+    (* `$!!` inside an expression lambda raises a return; without this handler
+       it would escape past the lambda to whatever called it. *)
+    | LExpr e -> let g = comp_expr lc e in fun fr -> (try g fr with Zy_return v -> v)
     | LBlock stmts ->
       let s = comp_block lc stmts in
       fun fr -> (try s fr; Unit with Zy_return v -> v)
