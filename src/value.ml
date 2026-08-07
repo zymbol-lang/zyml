@@ -404,7 +404,8 @@ let rec eq a b =
   | Bool x, Bool y -> x = y
   | Str x, Str y -> String.equal x y
   | Chr x, Chr y -> String.equal x y
-  | Str x, Chr y | Chr x, Str y -> String.equal x y
+  (* A Char is never equal to a String, not even a one-character one:
+     `"a" == 'a'` is `#0` in all three reference engines. *)
   | Unit, Unit -> true
   | Arr x, Arr y | Tup x, Tup y | NTup (_, x), NTup (_, y) ->
     Array.length x = Array.length y &&

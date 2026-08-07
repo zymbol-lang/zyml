@@ -186,6 +186,23 @@ No single large blocker is left.  Ranked by how many corpus files each blocks:
    `</ />`.
 6. **Errors as values** — `$!` and `$!!` are stubs, as noted above.
 
+## The reference engines disagree with each other
+
+Writing a fourth engine surfaced six cases where the tree-walker, the VM and
+the JavaScript engine give **different answers to the same program** — none of
+which the `vm_compare.sh` parity gate catches, because no test in the corpus
+exercises them.  `#?` counts bytes in the tree-walker and characters
+everywhere else; `==` over arrays is `#0` only in the VM; `10 ^ 20` produces
+four different results in four engines.
+
+They are written up, with reproductions and a recommendation each, in
+[es/auditoria_motores.md](es/auditoria_motores.md) (Spanish).
+
+zyml deliberately reproduces two of those bugs, because its definition of
+correctness is "byte-identical to `zymbol run`" and the tree-walker is what
+`zymbol run` means.  When Rust is fixed, zyml follows, and the parity suite
+verifies it.
+
 ## Known limitations
 
 * No semantic analysis pass, so the diagnostics in the section above are not
