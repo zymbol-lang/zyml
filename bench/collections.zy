@@ -1,0 +1,9 @@
+// Higher-order operators over a 2000-element array, 300 times
+base = []
+@ i:1..2000 { base = base$+ i }
+acc = 0
+@ r:1..300 {
+    doubled = base$> (x -> x * 2)
+    acc += doubled$< (0, (a, x) -> a + x)
+}
+>> acc ¶

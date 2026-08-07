@@ -1,0 +1,39 @@
+// Named functions, recursion, output params
+add(a, b) { <~ a + b }
+>> add(3, 4) ¶
+mul(a, b) { <~ a * b }
+>> mul(6, 7) ¶
+greet(name) { <~ "Hello, {name}" }
+>> greet("World") ¶
+answer() { <~ 42 }
+>> answer() ¶
+factorial(n) {
+    ? n <= 1 { <~ 1 }
+    <~ n * factorial(n - 1)
+}
+>> factorial(10) ¶
+fib(n) {
+    ? n < 2 { <~ n }
+    <~ fib(n - 1) + fib(n - 2)
+}
+>> fib(20) ¶
+increment(counter<~) { counter = counter + 1 }
+x = 0
+increment(x)
+>> x ¶
+get_and_increment(val<~) {
+    val = val + 1
+    <~ val
+}
+n = 5
+result = get_and_increment(n)
+>> "result=" result " n=" n ¶
+swap(a<~, b<~) {
+    tmp = a
+    a = b
+    b = tmp
+}
+p = 10
+q = 20
+swap(p, q)
+>> "p=" p " q=" q ¶

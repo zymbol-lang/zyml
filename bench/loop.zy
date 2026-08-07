@@ -1,0 +1,6 @@
+// Loop + variable update: 10M iterations
+total = 0
+@ i:1..10000000 {
+    total += i % 7
+}
+>> total ¶

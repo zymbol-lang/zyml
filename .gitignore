@@ -1,0 +1,18 @@
+# Build artifacts — ocamlopt writes these next to the sources.
+*.cmx
+*.cmi
+*.cma
+*.cmxa
+*.o
+*.a
+
+# The binary itself
+/zyml
+
+# Editor / OS noise
+*~
+.DS_Store
+
+# Scratch a corpus run leaves behind: the std/db tests write relative to the
+# process cwd, which is this directory when tests/parity.sh --corpus runs.
+zy_test_db_*.db

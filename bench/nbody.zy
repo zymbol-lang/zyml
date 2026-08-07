@@ -1,0 +1,11 @@
+// Array indexing in a tight nested loop: 4M reads
+n = 200
+arr = []
+@ i:1..n { arr = arr$+ i }
+acc = 0
+@ r:1..20000 {
+    @ i:1..n {
+        acc += arr[i] * 2 - 1
+    }
+}
+>> acc ¶

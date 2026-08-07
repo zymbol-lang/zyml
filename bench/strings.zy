@@ -1,0 +1,7 @@
+// String building and interpolation: 200k iterations
+out = 0
+@ i:1..200000 {
+    s = "item {i}"
+    out += s$#
+}
+>> out ¶

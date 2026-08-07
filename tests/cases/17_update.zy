@@ -1,0 +1,11 @@
+// Indexed compound assignment and functional update
+arr = [10, 20, 30, 40, 50]
+arr[2] = 99
+>> arr ¶
+arr[1] += 5
+>> arr ¶
+arr[3] *= 2
+>> arr ¶
+arr2 = arr[2]$~ 0
+>> arr ¶
+>> arr2 ¶

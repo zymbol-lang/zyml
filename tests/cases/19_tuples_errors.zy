@@ -1,0 +1,58 @@
+// Named tuples and try/catch/finally
+person = (name: "Alice", age: 25, active: #1)
+>> person ¶
+>> person.name ¶
+>> person.age ¶
+>> person[1] ¶
+>> person[2] ¶
+>> person#? ¶
+pos = (x: 10, y: 20)
+p = (pos: pos, label: "origin")
+>> p.label ¶
+>> p.pos.x ¶
+>> p ¶
+older = person["age"]$~ 26
+upper = person[1]$~ "ALICE"
+>> person.age ¶
+>> older.age ¶
+>> upper.name ¶
+t = (10, 20, 30)
+t2 = t[2]$~ 999
+>> t ¶
+>> t2 ¶
+data = (42, "hello", #1, 3.14)
+>> data[3] ¶
+!? {
+    x = 10 / 0
+    >> "never" ¶
+} :! ##Div {
+    >> "division by zero caught" ¶
+} :! ##IO {
+    >> "IO error" ¶
+} :! {
+    >> "other error: " _err ¶
+} :> {
+    >> "always runs (finally)" ¶
+}
+!? {
+    arr = [1, 2, 3]
+    v = arr[10]
+    >> v ¶
+} :! ##Index {
+    >> "index out of bounds" ¶
+} :! {
+    >> "other: " _err ¶
+}
+!? {
+    !? {
+        y = 10 / 0
+        >> y ¶
+    } :! ##Div {
+        >> "inner: div zero" ¶
+    }
+    >> "continues after inner try" ¶
+} :! {
+    >> "outer error" ¶
+}
+z = 42
+>> (z$!) ¶
