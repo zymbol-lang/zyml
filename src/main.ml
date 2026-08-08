@@ -29,13 +29,45 @@ let load path =
   let toks = Lexer.tokenize src in
   Parser.parse toks
 
+(* Where execution was when it stopped.  Reported on every runtime error, and
+   the difference between a usable message and `Fatal error: exception
+   Value.Zy_break(0)`. *)
+let at_line () =
+  match !Value.cur_line, !Value.cur_fn with
+  | 0, _ -> ""
+  | l, "" -> Printf.sprintf " (line %d)" l
+  | l, f -> Printf.sprintf " (line %d, in %s)" l f
+
 let guard f =
   try f () with
   | Lexer.Lex_error (m, l) -> die (Printf.sprintf "Lex error: %s (line %d)" m l)
   | Parser.Parse_error (m, l) -> die (Printf.sprintf "Parse error: %s (line %d)" m l)
   | Compile.Compile_error m -> die (Printf.sprintf "Compile error: %s" m)
-  | Value.Zy_error (_, m) -> die (Printf.sprintf "Runtime error: %s" m)
+  | Value.Zy_error (_, m) -> die (Printf.sprintf "Runtime error: %s%s" m (at_line ()))
+  (* A jump that reached the top means no loop claimed it.  Saying so beats
+     letting OCaml print the raw constructor. *)
+  | Value.Zy_break None ->
+    die (Printf.sprintf "Runtime error: '@!' outside a loop%s" (at_line ()))
+  | Value.Zy_break (Some l) ->
+    die (Printf.sprintf "Runtime error: '@:%s!' has no matching loop labelled '%s'%s"
+           l l (at_line ()))
+  | Value.Zy_continue None ->
+    die (Printf.sprintf "Runtime error: '@>' outside a loop%s" (at_line ()))
+  | Value.Zy_continue (Some l) ->
+    die (Printf.sprintf "Runtime error: '@:%s>' has no matching loop labelled '%s'%s"
+           l l (at_line ()))
+  | Value.Zy_return _ ->
+    die (Printf.sprintf "Runtime error: '<~' outside a function%s" (at_line ()))
+  | Stack_overflow ->
+    die (Printf.sprintf "Runtime error: stack overflow — infinite recursion?%s"
+           (at_line ()))
   | Sys_error m -> die (Printf.sprintf "error: %s" m)
+  (* Nothing should reach here, but an OCaml exception printed raw tells the
+     user nothing about their program.  Whatever it is, say where it happened. *)
+  | Invalid_argument m ->
+    die (Printf.sprintf "Runtime error: invalid argument: %s%s" m (at_line ()))
+  | Not_found -> die (Printf.sprintf "Runtime error: not found%s" (at_line ()))
+  | Failure m -> die (Printf.sprintf "Runtime error: %s%s" m (at_line ()))
 
 let cmd_run ?(args = []) path =
   guard (fun () ->

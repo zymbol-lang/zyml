@@ -68,6 +68,12 @@ exception Zy_return of value
 exception Zy_break of string option
 exception Zy_continue of string option
 
+(* Where execution is.  Updated once per statement, which is one integer store
+   -- cheap enough to leave on always, and the difference between a message a
+   user can act on and one they cannot. *)
+let cur_line = ref 0
+let cur_fn = ref ""
+
 let err fmt = Printf.ksprintf (fun s -> raise (Zy_error ("", s))) fmt
 let errk kind fmt = Printf.ksprintf (fun s -> raise (Zy_error (kind, s))) fmt
 

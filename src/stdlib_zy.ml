@@ -67,17 +67,25 @@ let math_log2 = native "log" 2 (fun a ->
 let seeded = ref false
 let ensure_seed () = if not !seeded then begin Random.self_init (); seeded := true end
 
+(* `Random.int` caps at 2^30, and a Zymbol program picking from a range derived
+   from an LCG modulus asks for far more than that.  Fall through to the 63-bit
+   generator rather than raising Invalid_argument at the user. *)
+let random_below n =
+  if n <= 0 then 0
+  else if n < 0x40000000 then Random.int n
+  else Int64.to_int (Random.int64 (Int64.of_int n))
+
 let random_fns = [
   ("entero", 2, fun a ->
       ensure_seed ();
       let lo = int_of "entero" a.(0) and hi = int_of "entero" a.(1) in
       if hi < lo then errk "Type" "random::entero needs low <= high"
-      else Int (lo + Random.int (hi - lo + 1)));
+      else Int (lo + random_below (hi - lo + 1)));
   ("rango", 1, fun a ->
       ensure_seed ();
       let n = int_of "rango" a.(0) in
       if n <= 0 then errk "Type" "random::rango needs a positive count"
-      else Int (Random.int n));
+      else Int (random_below n));
   (* A neural-network style weight: Float in [-0.1, 0.1], not [0, 1). *)
   ("peso_f64", 0, fun _ -> ensure_seed (); Float (Random.float 0.2 -. 0.1));
 ]

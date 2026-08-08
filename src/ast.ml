@@ -146,6 +146,10 @@ and stmt =
   | Try of stmt list * (string option * stmt list) list * stmt list option
   | PropErr of expr                       (* x$!! — early-return an error *)
   | ExprStmt of expr
+  (* Source position, wrapped around a statement rather than added to every
+     constructor: the AST is consumed once, so one indirection costs nothing
+     and touching thirty constructors would. *)
+  | At of int * stmt
 
 (* An export entry names something the module publishes, optionally under a
    different public name.  `alias::fn` and `alias.CONST` re-export from an

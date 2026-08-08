@@ -224,6 +224,27 @@ correctness is "byte-identical to `zymbol run`" and the tree-walker is what
 `zymbol run` means.  When Rust is fixed, zyml follows, and the parity suite
 verifies it.
 
+## When something goes wrong
+
+Runtime errors carry the line they happened on and the function they happened
+in:
+
+```
+Runtime error: index 9 out of bounds (length 2) (line 3)
+Runtime error: '@!' outside a loop (line 2)
+Runtime error: stack overflow — infinite recursion? (line 1, in fib)
+```
+
+Position is tracked once per statement — a single integer store, folded into
+the statement sequence rather than wrapped around each one, which measures at
+about 4% on a tight loop.  Wrapping each statement in its own closure instead
+cost 3.6×, which is why it is not done that way.
+
+No control-flow exception escapes as a raw OCaml constructor.  `@!` that no
+loop claimed, `<~` outside a function and stack overflow each get a sentence
+saying what happened; so does anything unexpected, rather than printing
+`Fatal error: exception …` at a user who did not write OCaml.
+
 ## Known limitations
 
 * No semantic analysis pass, so the diagnostics in the section above are not

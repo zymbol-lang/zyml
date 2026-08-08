@@ -81,6 +81,10 @@ let cur_dir = ref "."
 (* Arguments the script was invoked with, for `><`. *)
 let script_args : string list ref = ref []
 
+(* Statements arrive wrapped in their source position; anything that inspects
+   the shape of one has to look through it. *)
+let rec unwrap (s : stmt) = match s with At (_, x) -> unwrap x | x -> x
+
 let new_ctx ?mscope ?mimports parent = {
   scopes = [ Hashtbl.create 16 ]; nslots = 0; parent;
   capmap = []; capget = []; ncaps = 0;
@@ -672,7 +676,8 @@ and compile_module (file : string) : modul =
     | Parser.Parse_error (m, l) -> cerr "in %s: parse error: %s (line %d)" file m l
   in
   let name, body =
-    match prog with
+    (* Statements arrive wrapped in their source position. *)
+    match List.map unwrap prog with
     | [ ModuleDecl (n, b) ] -> n, b
     | _ -> cerr "%s is not a module: a module file holds exactly one '# name { ... }'" file
   in
@@ -702,7 +707,7 @@ and compile_module (file : string) : modul =
       i
   in
   let exports = ref [] in
-  List.iter (function
+  List.iter (fun st -> match unwrap st with
       | Import (path, alias) -> Hashtbl.replace mimports alias (load_module path)
       | Export items -> exports := !exports @ items
       | ConstDecl (n, _) -> ignore (declare_state ~is_const:true n)
@@ -727,7 +732,7 @@ and compile_module (file : string) : modul =
      definition order does not matter — a function may call one declared fifty
      lines below it — so registering them as they are compiled would make the
      module's own layout decide what resolves. *)
-  List.iter (function
+  List.iter (fun st -> match unwrap st with
       | FuncDecl (fname, params, _) ->
         let arity = List.length params in
         let outs = List.mapi (fun i p -> (i, p.pout)) params
@@ -737,7 +742,7 @@ and compile_module (file : string) : modul =
             fbody = (fun _ -> Unit); fmstate = state }
       | _ -> ()) body;
   Hashtbl.iter (fun k v -> Hashtbl.replace funcs k v) own_funcs;
-  List.iter (function
+  List.iter (fun st -> match unwrap st with
       | FuncDecl (fname, params, fbody) ->
         let fv = Hashtbl.find own_funcs fname in
         (* A module function is compiled against the module's scope, so it
@@ -924,7 +929,16 @@ and invoke (fv : value) (argv : value array) : value =
     let slots = Array.make (max f.fslots 1) Unit in
     Array.blit argv 0 slots 0 (Array.length argv);
     let fr = { slots; caps = [||]; mstate = f.fmstate } in
-    (try f.fbody fr with Zy_return v -> v)
+    (* Name the frame an error happened in.  Restored on the way out, including
+       on the exception path -- otherwise the reported function is whichever
+       one happened to fail last. *)
+    let prev = !cur_fn in
+    cur_fn := f.fname;
+    let r = (try f.fbody fr with
+        | Zy_return v -> v
+        | e -> cur_fn := prev; raise e) in
+    cur_fn := prev;
+    r
   | Lam l ->
     if Array.length argv <> l.lparams then
       err "lambda expects %d argument(s), got %d" l.lparams (Array.length argv);
@@ -1023,6 +1037,10 @@ and comp_lvalue_read (c : ctx) (lv : lvalue) : code =
 
 and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
   match s with
+  (* Reached only when a statement is compiled outside [comp_block]; the block
+     path strips the wrapper and emits the store inline instead, because an
+     extra closure per statement costs several times what the store does. *)
+  | At (_, inner) -> comp_stmt c inner
   | ExprStmt e -> let g = comp_expr c e in fun fr -> ignore (g fr)
 
   | Assign (LVar name, e) when lookup_local c name = None
@@ -1350,17 +1368,48 @@ and comp_if c branches els =
 (* Does this body need a per-iteration `try`?  A body with no `@>`/`@!` that
    targets this loop can run without one. *)
 and body_jumps stmts =
+  (* Every construct that can hold a block has to be walked.  Missing one does
+     not make the loop slower — it makes `@!` escape the loop entirely and
+     surface as an uncaught exception, which is how a `@!` inside a `??` arm
+     used to crash the interpreter. *)
   let rec ex_s : Ast.stmt -> bool = function
+    | Ast.At (_, s) -> ex_s s
     | Ast.Break _ | Ast.Continue _ -> true
     | Ast.If (bs, e) ->
       List.exists (fun (_, b) -> List.exists ex_s b) bs
       || (match e with Some b -> List.exists ex_s b | None -> false)
+    | Ast.Try (b, catches, fin) ->
+      List.exists ex_s b
+      || List.exists (fun (_, cb) -> List.exists ex_s cb) catches
+      || (match fin with Some f -> List.exists ex_s f | None -> false)
+    | Ast.TuiBlock b -> List.exists ex_s b
     | Ast.Loop (_, _, body) ->
       (* A nested loop swallows its own unlabelled jumps, but a labelled jump
          inside it can still target us. *)
       List.exists (function
           | Ast.Break (Some _) | Ast.Continue (Some _) -> true
           | s -> ex_s s) body
+    (* A jump can also sit in an expression's block: a match arm, or a block
+       lambda.  The lambda is a different frame and swallows its own, but a
+       match arm belongs to the enclosing loop. *)
+    | Ast.Assign (_, e) | Ast.ConstDecl (_, e) | Ast.OpAssign (_, _, e)
+    | Ast.ExprStmt e | Ast.Ret (Some e) | Ast.Sleep e
+    | Ast.Destructure (_, e) -> ex_e e
+    | Ast.Output items -> List.exists ex_e items
+    | Ast.OutputPos (slots, items) ->
+      List.exists (function Some e -> ex_e e | None -> false) slots
+      || List.exists ex_e items
+    | _ -> false
+  and ex_e : Ast.expr -> bool = function
+    | Ast.Match (scrut, arms) ->
+      ex_e scrut
+      || List.exists (fun (_, body) -> match body with
+          | Ast.MBlock b -> List.exists ex_s b
+          | Ast.MExpr e -> ex_e e) arms
+    | Ast.Bin (_, a, b) -> ex_e a || ex_e b
+    | Ast.Un (_, a) -> ex_e a
+    | Ast.Call (f, args) -> ex_e f || List.exists ex_e args
+    | Ast.Concat es | Ast.ArrLit es | Ast.TupLit es -> List.exists ex_e es
     | _ -> false
   in
   List.exists ex_s stmts
@@ -1466,13 +1515,30 @@ and comp_func c name params body =
   fun _ -> ()
 
 and comp_block (c : ctx) (stmts : stmt list) : (frame -> unit) =
+  (* Position tracking is folded into the sequence rather than wrapped around
+     each statement: one integer store per statement instead of a store plus a
+     closure call.  The wrapped form measured 3.6x slower on a tight loop. *)
+  let lines = Array.of_list
+      (List.map (function At (l, _) -> l | _ -> 0) stmts) in
   let cs = Array.of_list (List.map (comp_stmt c) stmts) in
   match Array.length cs with
   | 0 -> fun _ -> ()
-  | 1 -> cs.(0)
-  | 2 -> let a = cs.(0) and b = cs.(1) in fun fr -> a fr; b fr
-  | 3 -> let a = cs.(0) and b = cs.(1) and d = cs.(2) in fun fr -> a fr; b fr; d fr
-  | n -> fun fr -> for i = 0 to n - 1 do (Array.unsafe_get cs i) fr done
+  | 1 ->
+    let a = cs.(0) and l0 = lines.(0) in
+    fun fr -> cur_line := l0; a fr
+  | 2 ->
+    let a = cs.(0) and b = cs.(1) and l0 = lines.(0) and l1 = lines.(1) in
+    fun fr -> cur_line := l0; a fr; cur_line := l1; b fr
+  | 3 ->
+    let a = cs.(0) and b = cs.(1) and d = cs.(2) in
+    let l0 = lines.(0) and l1 = lines.(1) and l2 = lines.(2) in
+    fun fr -> cur_line := l0; a fr; cur_line := l1; b fr; cur_line := l2; d fr
+  | n ->
+    fun fr ->
+      for i = 0 to n - 1 do
+        cur_line := Array.unsafe_get lines i;
+        (Array.unsafe_get cs i) fr
+      done
 
 (* ------------------------------------------------------------------- entry *)
 
@@ -1486,7 +1552,8 @@ let compile ?(file = "") (prog : program) : (unit -> unit) =
   (* Register every top-level function before compiling any body.  A function
      may call one declared further down the file — the call resolves when the
      caller runs, not where it is written. *)
-  List.iter (function
+  List.iter (fun st ->
+      match unwrap st with
       | FuncDecl (name, params, _) ->
         let arity = List.length params in
         let outs = List.mapi (fun i (p : param) -> (i, p.pout)) params

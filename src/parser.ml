@@ -771,6 +771,12 @@ and parse_lvalue p =
   !lv
 
 and parse_stmt p =
+  let ln = line p in
+  match parse_stmt_inner p with
+  | Output [] as s -> s          (* separators carry no position worth keeping *)
+  | s -> At (ln, s)
+
+and parse_stmt_inner p =
   match peek p with
   | TNewline -> ignore (advance p); Output [ SLit "\n" ]
   | TSemi -> ignore (advance p); Output []          (* a separator, not a statement *)
