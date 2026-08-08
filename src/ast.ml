@@ -135,6 +135,7 @@ and stmt =
      variable name, a rest collector, or `_` to discard the position. *)
   | Destructure of dpat * expr
   | KeyInput of bool * string             (* <<| var  /  <<|? var *)
+  | CliArgs of string                     (* >< var           *)
   | ClearScreen                           (* >>!              *)
   | OutputPos of expr option list * expr list  (* >>~ (r,c,…) > items *)
   | TuiBlock of stmt list                 (* >>| { … }        *)

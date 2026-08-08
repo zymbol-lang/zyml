@@ -78,6 +78,9 @@ let modules : (string, modul) Hashtbl.t = Hashtbl.create 8
    to it, so it is saved and restored around each nested module. *)
 let cur_dir = ref "."
 
+(* Arguments the script was invoked with, for `><`. *)
+let script_args : string list ref = ref []
+
 let new_ctx ?mscope ?mimports parent = {
   scopes = [ Hashtbl.create 16 ]; nslots = 0; parent;
   capmap = []; capget = []; ncaps = 0;
@@ -985,8 +988,9 @@ and comp_store (c : ctx) (lv : lvalue) : (frame -> value -> unit) =
             cerr "cannot reassign module constant '%s'" name
           | _ -> fun fr v -> fr.mstate.(i) <- v)
        | RConst _ -> cerr "cannot reassign constant '%s'" name
-       | RFunc _ -> cerr "cannot assign to function '%s'" name
-       | RNone -> let i = declare c name in fun fr v -> fr.slots.(i) <- v)
+       (* A name that exists only as a global function is not a variable: an
+          assignment to it declares a local that shadows the function. *)
+       | RFunc _ | RNone -> let i = declare c name in fun fr v -> fr.slots.(i) <- v)
   | LHot (prefix, name) ->
     let i = hot_slot c prefix name in
     fun fr v -> fr.slots.(i) <- v
@@ -1022,7 +1026,8 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
   | ExprStmt e -> let g = comp_expr c e in fun fr -> ignore (g fr)
 
   | Assign (LVar name, e) when lookup_local c name = None
-                            && (match resolve c name with RNone -> true | _ -> false) ->
+                            && (match resolve c name with
+                                | RNone | RFunc _ -> true | _ -> false) ->
     (* First mention of a name declares it -- but the right-hand side is
        compiled first, because it may be what declares it: in
        `total = °total + item` the `°total` anchors the slot above the loop,
@@ -1190,6 +1195,12 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
          program printed before waiting for a key is usually the point. *)
       flush_out ();
       st fr (read_key ~blocking)
+
+  (* `>< args` — the arguments after the script name, as a string array. *)
+  | CliArgs name ->
+    let st = comp_store c (LVar name) in
+    let args = Arr (Array.of_list (List.map (fun s -> Str s) !script_args)) in
+    fun fr -> st fr (copy_val args)
 
   | ClearScreen -> fun _ -> emit "\027[2J\027[1;1H"
 
@@ -1433,10 +1444,20 @@ and comp_func c name params body =
   let outs = List.mapi (fun i p -> (i, p.pout)) params
              |> List.filter snd |> List.map fst |> Array.of_list in
   (* Register before compiling the body so the body can call itself. *)
-  let fv = { fname = name; arity; fslots = arity; outs;
-             fbody = (fun _ -> Unit); fmstate = [||] } in
-  Hashtbl.replace funcs name fv;
-  let fc = new_ctx None in
+  let fv =
+    (* Reuse the pre-registered value if there is one: callers compiled before
+       this point already hold a reference to it. *)
+    match Hashtbl.find_opt funcs name with
+    | Some f when f.arity = arity -> f
+    | _ ->
+      let f = { fname = name; arity; fslots = arity; outs;
+                fbody = (fun _ -> Unit); fmstate = [||] } in
+      Hashtbl.replace funcs name f; f
+  in
+  (* A named function has isolated scope for *variables*, but module aliases are
+     compile-time names, not runtime state: `<# ./x => m` at the top of a script
+     has to be visible inside its functions. *)
+  let fc = new_ctx ~mimports:c.mimports None in
   List.iter (fun p -> ignore (declare fc p.pname)) params;
   let b = comp_block fc body in
   fv.fslots <- fc.nslots;
@@ -1462,6 +1483,18 @@ let compile ?(file = "") (prog : program) : (unit -> unit) =
   cur_dir := (if file = "" then "." else Filename.dirname file);
   numeral_base := 0x30;
   let c = new_ctx None in
+  (* Register every top-level function before compiling any body.  A function
+     may call one declared further down the file — the call resolves when the
+     caller runs, not where it is written. *)
+  List.iter (function
+      | FuncDecl (name, params, _) ->
+        let arity = List.length params in
+        let outs = List.mapi (fun i (p : param) -> (i, p.pout)) params
+                   |> List.filter snd |> List.map fst |> Array.of_list in
+        Hashtbl.replace funcs name
+          { fname = name; arity; fslots = arity; outs;
+            fbody = (fun _ -> Unit); fmstate = [||] }
+      | _ -> ()) prog;
   let b = comp_block c prog in
   let nslots = c.nslots in
   fun () ->

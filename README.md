@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-405%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-409%2F532-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -133,7 +133,7 @@ zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
 **Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**405 identical, 11 differing, 116 not yet supported.**
+**409 identical, 11 differing, 112 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
@@ -182,7 +182,8 @@ terminal *columns*, so a CJK ideograph counts two) · **TUI primitives** —
 TTY so a piped layout still runs), `>>~` positioned output with sparse slots
 and ANSI styling, `>>|` alternate-screen block, `<<|` / `<<|?` key input in raw mode with arrow
 keys decoded to their glyphs (`↑`, `↓`, `←`, `→`) · **destructuring** — `[a, *rest]`,
-`(x, y)`, `(name: n)`, overwriting rather than shadowing · **`°` hot
+`(x, y)`, `(name: n)`, overwriting rather than shadowing · `><` CLI argument
+capture · juxtaposition inside call arguments · **`°` hot
 definition** — `°x` anchors above the nearest loop and survives it, `x°`
 anchors to the loop and dies with it, both auto-initialising to the operator's
 neutral value on first use (0 for `+`, 1 for `*`, `[]` for `$+`, `""` for
@@ -237,7 +238,10 @@ verifies it.
   counts one.
 * Numeric literals must use ASCII digits; `४२` lexes as an identifier.
 * Assignment copies aggregates eagerly (`b = arr` is O(n)).  Correct, but
-  copy-on-write would be cheaper.
+  copy-on-write would be cheaper — and the cost is visible: on the Go benchmark
+  in `../GO` this engine is 1.3× the register VM on a 9×9 board and **5.7× on
+  19×19**, where a board copy per legality test is 361 cells rather than 81.
+  That gap is the eager copy, not the closure model.
 
 ## Licence
 

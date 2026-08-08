@@ -53,6 +53,7 @@ type token =
   | TOutClear | TOutSize | TOutPos | TOutGate
   | THot                        (* ° — hot definition *)
   | TKeyBlock | TKeyPoll        (* <<| and <<|? *)
+  | TCliArgs                    (* >< *)
   | TNumeralMode of int         (* #d0d9# — the script's zero code point *)
   | TErrType of string          (* ##Div, ##Index, ##_ *)
   | TEOF
@@ -110,6 +111,7 @@ let show = function
   | TOutClear -> ">>!" | TOutSize -> ">>?" | TOutPos -> ">>~" | TOutGate -> ">>|"
   | THot -> "\xc2\xb0"
   | TKeyBlock -> "<<|" | TKeyPoll -> "<<|?"
+  | TCliArgs -> "><"
   | TNumeralMode b -> Printf.sprintf "#<%04X>#" b
   | TErrType t -> "##" ^ t
   | TEOF -> "<eof>"
@@ -357,7 +359,8 @@ let tokenize (src : string) : t array =
       | '>' ->
         (* The TUI operators bind tightly: `>>!` is clear-screen, while
            `>> !flag` (with the space) is output of a negation. *)
-        if peek 1 = '>' && peek 2 = '!' then begin push TOutClear; i := !i + 3 end
+        if peek 1 = '<' then begin push TCliArgs; i := !i + 2 end
+        else if peek 1 = '>' && peek 2 = '!' then begin push TOutClear; i := !i + 3 end
         else if peek 1 = '>' && peek 2 = '?' then begin push TOutSize; i := !i + 3 end
         else if peek 1 = '>' && peek 2 = '~' then begin push TOutPos; i := !i + 3 end
         else if peek 1 = '>' && peek 2 = '|' then begin push TOutGate; i := !i + 3 end

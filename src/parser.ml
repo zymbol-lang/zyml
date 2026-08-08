@@ -134,7 +134,7 @@ let starts_statement = function
   | TOut | TIn | TIf | TMatch | TAt | TAtLabel _ | TAtBreak | TAtCont | TAtSleep
   | TAtLabelBreak _ | TAtLabelCont _ | TRet | TNewline | TRBrace | TEOF
   | TBackslash | TSemi | TOutClear | TOutPos | TOutGate
-  | TKeyBlock | TKeyPoll -> true
+  | TKeyBlock | TKeyPoll | TCliArgs -> true
   | _ -> false
 
 (* Decide whether a postfix `[...]` is navigation or a plain 1-D index: it is
@@ -538,8 +538,8 @@ and parse_coll_operand p =
         ignore (advance p);
         let args = ref [] in
         if peek p <> TRParen then begin
-          args := [ parse_expr p ];
-          while peek p = TComma do ignore (advance p); args := parse_expr p :: !args done
+          args := [ parse_arg p ];
+          while peek p = TComma do ignore (advance p); args := parse_arg p :: !args done
         end;
         expect p TRParen ")";
         e := Call (!e, List.rev !args)
@@ -606,8 +606,8 @@ and parse_postfix p e =
       ignore (advance p);
       let args = ref [] in
       if peek p <> TRParen then begin
-        args := [ parse_expr p ];
-        while peek p = TComma do ignore (advance p); args := parse_expr p :: !args done
+        args := [ parse_arg p ];
+        while peek p = TComma do ignore (advance p); args := parse_arg p :: !args done
       end;
       expect p TRParen ")";
       e := Call (!e, List.rev !args)
@@ -632,8 +632,8 @@ and parse_primary p =
     expect p TLParen "'('";
     let args = ref [] in
     if peek p <> TRParen then begin
-      args := [ parse_expr p ];
-      while peek p = TComma do ignore (advance p); args := parse_expr p :: !args done
+      args := [ parse_arg p ];
+      while peek p = TComma do ignore (advance p); args := parse_arg p :: !args done
     end;
     expect p TRParen ")";
     ModCall (s, fn, List.rev !args)
@@ -730,8 +730,8 @@ and parse_out_term p =
           ignore (advance p);
           let args = ref [] in
           if peek p <> TRParen then begin
-            args := [ parse_expr p ];
-            while peek p = TComma do ignore (advance p); args := parse_expr p :: !args done
+            args := [ parse_arg p ];
+            while peek p = TComma do ignore (advance p); args := parse_arg p :: !args done
           end;
           expect p TRParen ")";
           e := Call (!e, List.rev !args)
@@ -785,6 +785,7 @@ and parse_stmt p =
   | TAtSleep -> ignore (advance p); Sleep (parse_expr p)
   | TBackslash -> ignore (advance p); Discard (ident p)
   | TTry -> parse_try p
+  | TCliArgs -> ignore (advance p); CliArgs (ident p)
   | TKeyBlock -> ignore (advance p); KeyInput (true, ident p)
   | TKeyPoll -> ignore (advance p); KeyInput (false, ident p)
   | TOutClear -> ignore (advance p); ClearScreen
@@ -828,6 +829,12 @@ and parse_assign_like p =
    `>>`: `full = first " " last` concatenates three items.  Items must sit on
    the same source line as the one before them, which is what keeps the next
    statement out. *)
+(* A call argument may be juxtaposed too: `f("  " a::b(x) c::d(y))` is one
+   argument built by concatenation, not three.  Same rule as the right-hand
+   side of an assignment, and the comma still separates arguments because a
+   comma cannot start an item. *)
+and parse_arg p = parse_assign_rhs p
+
 and parse_assign_rhs p =
   let first = parse_expr p in
   let more = ref [] in

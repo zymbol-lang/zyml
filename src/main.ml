@@ -37,8 +37,9 @@ let guard f =
   | Value.Zy_error (_, m) -> die (Printf.sprintf "Runtime error: %s" m)
   | Sys_error m -> die (Printf.sprintf "error: %s" m)
 
-let cmd_run path =
+let cmd_run ?(args = []) path =
   guard (fun () ->
+      Compile.script_args := args;
       let prog = load path in
       let run = Compile.compile ~file:path prog in
       run ();
@@ -86,7 +87,7 @@ let usage () =
 let () =
   match Array.to_list Sys.argv with
   | _ :: ("-v" | "--version") :: _ -> Printf.printf "zyml %s\n" version
-  | _ :: "run" :: path :: _ -> cmd_run path
+  | _ :: "run" :: path :: rest -> cmd_run ~args:rest path
   | _ :: "check" :: path :: _ -> cmd_check path
   | _ :: "tokens" :: path :: _ -> cmd_tokens path
   | _ :: "bench" :: path :: rest ->
