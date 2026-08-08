@@ -42,8 +42,12 @@ else
   #   - `input/`  reads stdin, and both engines are fed /dev/null here.
   #   - anything importing `lib_time` prints elapsed wall time, which differs
   #     between engines *because* they differ in speed.
+  #   - `scripts/manual_check.zy` shells out to ./target/release/zymbol by
+  #     relative path, so what it prints depends on the caller's directory,
+  #     not on the engine.
   mapfile -t FILES < <(find ../interpreter/tests -name '*.zy' \
                         -not -path '*/input/*' \
+                        -not -name 'manual_check.zy' \
                        | xargs grep -L lib_time \
                        | sort)
 fi

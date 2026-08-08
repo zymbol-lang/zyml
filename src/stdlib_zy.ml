@@ -391,6 +391,93 @@ let json_fns = [
           | Failure m -> Err ("Parse", m)));
 ]
 
+(* --------------------------------------------------------------------- net *)
+
+(* HTTP through `curl` rather than a socket library: the whole engine's premise
+   is no dependencies beyond the OCaml compiler, and curl is already a hard
+   requirement of any machine running these programs.  A failure comes back as
+   `##Network(...)`, matching the reference engine, rather than raising. *)
+
+let shell_quote s =
+  "'" ^ String.concat "'\\''" (String.split_on_char '\'' s) ^ "'"
+
+(* Headers arrive as an array of ("name", "value") pairs. *)
+let header_args v =
+  match v with
+  | Arr items | Tup items ->
+    Array.to_list items
+    |> List.filter_map (function
+        | Tup [| k; x |] | NTup (_, [| k; x |]) ->
+          Some (" -H " ^ shell_quote (as_text k ^ ": " ^ as_text x))
+        | _ -> None)
+    |> String.concat ""
+  | Unit -> ""
+  | v -> errk "Type" "headers must be an array of pairs, got %s" (type_name v)
+
+let net_err fmt = Printf.ksprintf (fun s -> Err ("Network", s)) fmt
+
+(* Body on stdout, then a sentinel line with curl's own exit code, so a failed
+   request is told apart from one that legitimately returned nothing. *)
+let curl (args : string) : value =
+  let cmd = "curl -sS --max-time 30 " ^ args ^ " 2>/tmp/.zyq_curl_err; echo \"\\n__ZY_RC__$?\"" in
+  let ic = Unix.open_process_in cmd in
+  let b = Buffer.create 4096 in
+  (try
+     while true do Buffer.add_channel b ic 1 done
+   with End_of_file -> ());
+  ignore (Unix.close_process_in ic);
+  let out = Buffer.contents b in
+  match String.rindex_opt out '_' with
+  | _ ->
+    let marker = "__ZY_RC__" in
+    (match String.index_opt out '\000' with _ -> ());
+    let idx =
+      let rec find i =
+        if i < 0 then None
+        else if i + String.length marker <= String.length out
+                && String.sub out i (String.length marker) = marker then Some i
+        else find (i - 1)
+      in
+      find (String.length out - String.length marker)
+    in
+    (match idx with
+     | None -> Str out
+     | Some i ->
+       let rc = String.trim (String.sub out (i + String.length marker)
+                               (String.length out - i - String.length marker)) in
+       (* Drop the sentinel and the newline echo added before it. *)
+       let body = String.sub out 0 (max 0 (i - 1)) in
+       if rc = "0" then Str body
+       else begin
+         let msg =
+           try String.trim (read_whole "/tmp/.zyq_curl_err") with _ -> ""
+         in
+         net_err "io: %s" (if msg = "" then "curl exited " ^ rc else msg)
+       end)
+
+let net_fns = [
+  ("get", 1, fun a -> curl (shell_quote (text "get" a.(0))));
+  ("get", 2, fun a -> curl (shell_quote (text "get" a.(0)) ^ header_args a.(1)));
+  ("head", 1, fun a ->
+      match curl ("-I -o /dev/null " ^ shell_quote (text "head" a.(0))) with
+      | Err _ -> Bool false
+      | _ -> Bool true);
+  ("post", 2, fun a ->
+      curl (shell_quote (text "post" a.(0)) ^ " -X POST --data-binary "
+            ^ shell_quote (display a.(1))));
+  ("post", 3, fun a ->
+      curl (shell_quote (text "post" a.(0)) ^ " -X POST --data-binary "
+            ^ shell_quote (display a.(1)) ^ header_args a.(2)));
+  ("post_json", 2, fun a ->
+      curl (shell_quote (text "post_json" a.(0))
+            ^ " -X POST -H 'Content-Type: application/json' --data-binary "
+            ^ shell_quote (display a.(1))));
+  ("post_json", 3, fun a ->
+      curl (shell_quote (text "post_json" a.(0))
+            ^ " -X POST -H 'Content-Type: application/json' --data-binary "
+            ^ shell_quote (display a.(1)) ^ header_args a.(2)));
+]
+
 (* ------------------------------------------------------------------ lookup *)
 
 (* What a module is, from the compiler's point of view: exported constants
@@ -417,4 +504,5 @@ let find (path : string) : std_module option =
   | "std/term" -> Some (of_list term_fns)
   | "std/io" -> Some (of_list io_fns)
   | "std/json" -> Some (of_list json_fns)
+  | "std/net" -> Some (of_list net_fns)
   | _ -> None

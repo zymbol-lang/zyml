@@ -36,7 +36,7 @@ Versión auditada: `zymbol 0.0.8`. Fecha: 2026-08-07.
 
 ## Resumen ejecutivo
 
-**12 hallazgos.** Siete son divergencias reales entre motores; el gate de
+**13 hallazgos.** Siete son divergencias reales entre motores; el gate de
 paridad `tests/scripts/vm_compare.sh` no detecta ninguna de ellas.
 
 > **Corrección (2026-08-07).** La versión inicial de este documento afirmaba en
@@ -60,6 +60,7 @@ paridad `tests/scripts/vm_compare.sh` no detecta ninguna de ellas.
 | B3 | Yuxtaposición concatena en `=`, `:=` y `<~` | — | — | — | Doc |
 | B4 | `#.N` devuelve Float, `#,.N` devuelve String | — | — | — | Doc |
 | B5 | `$!!` no propaga *en el lenguaje puro* | — | — | — | Doc |
+| C2 | `check` no verifica la aridad de `alias::fn` | ✗ | ✗ | — | Media |
 
 `✓` = comportamiento que parece correcto · `✗` = incorrecto o divergente ·
 `~` = los tres difieren · `—` = los tres coinciden, el problema es de
@@ -478,9 +479,48 @@ propaga nada, porque `v` es un número, no un error.
 
 ---
 
-# C. Asimetría menor
+# C. Huecos del analizador estático
 
-## C1 — Los patrones de lista de `??` fallan como ítem de `>>`
+## C2 — `zymbol check` no verifica la aridad en llamadas de módulo
+
+**Gravedad: media.** El analizador comprueba las llamadas a funciones locales y
+no las de módulo, así que un error que sí detecta en una forma se le escapa en
+la otra.
+
+```zymbol
+// m.zy
+# m {
+    #> { f }
+    f(a) { <~ a }
+}
+
+// main.zy
+<# ./m => m
+>> m::f("x", "y") ¶        // dos argumentos a una función de uno
+```
+
+| Comprobación | Resultado |
+|---|---|
+| `zymbol check main.zy` | `No errors or warnings` |
+| `zymbol run main.zy` | `Runtime error: function expects 1 arguments, got 2` |
+| `zyml check main.zy` | `Compile error: 'm::f' expects 1 argument(s), got 2` |
+
+La misma llamada escrita como función local (`f("x","y")`) **sí** la detecta el
+analizador. Solo la forma `alias::fn` se le escapa.
+
+Esto no es teórico: se encontró porque `zyml` rechazó `ZethyCLI/main.zy`, que
+lleva en la línea 100 una llamada de dos argumentos a una función de uno.
+`zymbol check` da ese fichero por bueno, y el error solo aparecería si la
+ejecución llega a esa rama —el mensaje de "Ollama no accesible"—, que es
+justamente el camino que menos se prueba.
+
+> **Recomendación**: extender la comprobación de aridad del analizador a las
+> llamadas `alias::fn`. La información está disponible: el analizador ya
+> resuelve el módulo para saber que la función existe.
+
+# D. Asimetría menor
+
+## D1 — Los patrones de lista de `??` fallan como ítem de `>>`
 
 ```zymbol
 n = 3

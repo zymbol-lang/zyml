@@ -562,7 +562,9 @@ and comp_expr (c : ctx) (e : expr) : code =
     let g = comp_expr c e in
     fun fr ->
       let cmd = display (g fr) in
-      let ic = Unix.open_process_in cmd in
+      (* Spawned as `sh`, not `/bin/sh`: the shell puts its own argv[0] in any
+         error it prints, and the reference engine's messages say `sh:`. *)
+      let ic = Unix.open_process_args_in "sh" [| "sh"; "-c"; cmd |] in
       let b = Buffer.create 256 in
       (try
          while true do Buffer.add_channel b ic 1 done
@@ -776,9 +778,12 @@ and compile_module (file : string) : modul =
         (match Hashtbl.find_opt mimports alias with
          | None -> cerr "module '%s' re-exports from unknown alias '%s'" name alias
          | Some src ->
-           match Hashtbl.find_opt src.mfuncs fn with
-           | Some f -> Hashtbl.replace mfuncs it.epublic f
-           | None -> cerr "'%s::%s' is not exported" alias fn)
+           (* Carry over *every* arity: `net::get` exists at one and two
+              arguments, and re-exporting only one of them silently narrows the
+              function for whoever imports the wrapper. *)
+           match Hashtbl.find_all src.mfuncs fn with
+           | [] -> cerr "'%s::%s' is not exported" alias fn
+           | fs -> List.iter (fun f -> Hashtbl.add mfuncs it.epublic f) fs)
       | EReConst (alias, cn) ->
         (match Hashtbl.find_opt mimports alias with
          | None -> cerr "module '%s' re-exports from unknown alias '%s'" name alias

@@ -184,6 +184,23 @@ let is_destructure p =
     !res
   | _ -> false
 
+(* What can begin a juxtaposed item.  Stated as a positive list rather than by
+   exclusion: with "anything that is not a statement keyword", a `)` or `,`
+   passes the test and the collector runs off the end of its own expression. *)
+let can_start_item p =
+  match peek p with
+  | TStr _ | TInt _ | TFloat _ | TChar _ | TIdent _ | TTrue | TFalse
+  | TLParen | TLBracket | THot | TCastFloat | TCastRound | TCastTrunc
+  | TFmtOpen _ | TBaseConv _ | TMatch | TShellOpen | TOutSize -> true
+  | _ -> false
+
+(* An identifier about to be assigned starts the next statement, not an item. *)
+let item_is_new_statement p =
+  match peek p, peek_at p 1 with
+  | TIdent _, (TAssign | TConstAssign | TPlusEq | TMinusEq | TStarEq
+              | TSlashEq | TPercentEq | TCaretEq | TInc | TDec) -> true
+  | _ -> false
+
 (* `$^ (a, b -> body)` spells a two-argument comparator without the usual
    parentheses around the parameter list, so it needs its own lookahead. *)
 let is_bare_pair_lambda p =
@@ -369,8 +386,10 @@ and parse_unary p =
   | TCastRound -> ignore (advance p); Cast (ToIntRound, parse_unary p)
   | TCastTrunc -> ignore (advance p); Cast (ToIntTrunc, parse_unary p)
   | TShellOpen ->
+    (* The command is built by juxtaposition like every other string in the
+       language: `<\ "test -f '" path "'" \>` is one command, not three. *)
     ignore (advance p);
-    let e = parse_expr p in
+    let e = parse_assign_rhs p in
     expect p TShellClose "'\\>'";
     parse_postfix p (Shell e)
   | TFmtOpen (st, pr) ->
@@ -459,11 +478,7 @@ and parse_coll_postfix p (e : expr) : expr option =
     ignore (advance p);
     let ln = line p in
     let items = ref [ parse_out_item p ] in
-    while line p = ln && not (starts_statement (peek p))
-          && (match peek p, peek_at p 1 with
-              | TIdent _, (TAssign | TPlusEq | TMinusEq | TStarEq | TSlashEq
-                          | TPercentEq | TCaretEq | TInc | TDec) -> false
-              | _ -> true)
+    while line p = ln && can_start_item p && not (item_is_new_statement p)
     do items := parse_out_item p :: !items done;
     Some (Build (e, List.rev !items))
   | TDot ->
@@ -847,12 +862,7 @@ and parse_assign_rhs p =
   let continues () =
     p.pos > 0 && line p = p.toks.(p.pos - 1).line
     && not (starts_statement (peek p))
-    && (match peek p, peek_at p 1 with
-        | TIdent _, (TAssign | TConstAssign | TPlusEq | TMinusEq | TStarEq
-                    | TSlashEq | TPercentEq | TCaretEq | TInc | TDec) -> false
-        | (TStr _ | TInt _ | TFloat _ | TChar _ | TIdent _ | TTrue | TFalse
-          | TLParen | TLBracket), _ -> true
-        | _ -> false)
+    && can_start_item p && not (item_is_new_statement p)
   in
   while continues () do more := parse_out_item p :: !more done;
   if !more = [] then first else Concat (first :: List.rev !more)

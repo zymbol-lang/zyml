@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-409%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-413%2F531-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -132,8 +132,8 @@ Three outcomes.  `DIFF` — both engines ran and disagreed — is a bug.  `UNSUP
 zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
-**Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**409 identical, 11 differing, 112 not yet supported.**
+**Status:** 20/20 on the local corpus.  On the reference corpus (531 files):
+**413 identical, 11 differing, 107 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
