@@ -833,6 +833,28 @@ let field_get v name =
      | None -> errk "Index" "named tuple has no field '%s'" name)
   | v -> errk "Type" "cannot read field '%s' of %s" name (type_name v)
 
+(* `>>?` — the terminal's [rows, cols].
+
+   OCaml exposes no ioctl, so the size comes from `stty size`, which reads
+   TIOCGWINSZ for us.  With no terminal there is nothing to measure and the
+   answer is the conventional [24, 80]: a layout written against `>>?` stays
+   runnable when its output is piped, it just lays itself out for 80 columns. *)
+let term_size () =
+  let default = Arr [| Int 24; Int 80 |] in
+  if not (Unix.isatty Unix.stdout) then default
+  else
+    match Unix.open_process_in "stty size 2>/dev/null" with
+    | ic ->
+      let line = try input_line ic with End_of_file -> "" in
+      ignore (Unix.close_process_in ic);
+      (match String.split_on_char ' ' (String.trim line) with
+       | [ r; c ] ->
+         (match int_of_string_opt r, int_of_string_opt c with
+          | Some r, Some c -> Arr [| Int r; Int c |]
+          | _ -> default)
+       | _ -> default)
+    | exception _ -> default
+
 (* ------------------------------------------------------------- key input *)
 
 (* `<<|` and `<<|?` read a single keypress, which needs the terminal out of

@@ -468,16 +468,7 @@ and comp_expr (c : ctx) (e : expr) : code =
   (* `>>?` — [rows, cols].  With no terminal attached there is nothing to
      measure, so it answers the conventional [24, 80] rather than failing: a
      layout written against `>>?` stays runnable when piped. *)
-  | TermSize ->
-    fun _ ->
-      let default = Arr [| Int 24; Int 80 |] in
-      if not (Unix.isatty Unix.stdout) then default
-      else begin
-        match int_of_string_opt (Sys.getenv_opt "LINES" |> Option.value ~default:""),
-              int_of_string_opt (Sys.getenv_opt "COLUMNS" |> Option.value ~default:"") with
-        | Some r, Some c when r > 0 && c > 0 -> Arr [| Int r; Int c |]
-        | _ -> default
-      end
+  | TermSize -> fun _ -> term_size ()
 
   | Nav (base, spec) -> comp_nav c base spec
 
@@ -729,19 +720,26 @@ and compile_module (file : string) : modul =
   let mc = new_ctx ~mscope ~mimports None in
   let own_funcs : (string, funcval) Hashtbl.t = Hashtbl.create 8 in
   let inits = ref [] in
+  (* Register every function *before* compiling any body.  Inside a module the
+     definition order does not matter — a function may call one declared fifty
+     lines below it — so registering them as they are compiled would make the
+     module's own layout decide what resolves. *)
   List.iter (function
-      | FuncDecl (fname, params, fbody) ->
+      | FuncDecl (fname, params, _) ->
         let arity = List.length params in
         let outs = List.mapi (fun i p -> (i, p.pout)) params
                    |> List.filter snd |> List.map fst |> Array.of_list in
-        let fv = { fname; arity; fslots = arity; outs;
-                   fbody = (fun _ -> Unit); fmstate = state } in
-        Hashtbl.replace own_funcs fname fv;
+        Hashtbl.replace own_funcs fname
+          { fname; arity; fslots = arity; outs;
+            fbody = (fun _ -> Unit); fmstate = state }
+      | _ -> ()) body;
+  Hashtbl.iter (fun k v -> Hashtbl.replace funcs k v) own_funcs;
+  List.iter (function
+      | FuncDecl (fname, params, fbody) ->
+        let fv = Hashtbl.find own_funcs fname in
         (* A module function is compiled against the module's scope, so it
            reads and writes module state directly. *)
         let fc = new_ctx ~mscope ~mimports None in
-        (* Sibling functions must be visible regardless of definition order. *)
-        Hashtbl.iter (fun k v -> Hashtbl.replace funcs k v) own_funcs;
         List.iter (fun p -> ignore (declare fc p.pname)) params;
         let b = comp_block fc fbody in
         fv.fslots <- fc.nslots;
@@ -1210,22 +1208,31 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
       let nth k = match List.nth_opt vals k with Some (Some v) -> Some v | _ -> None in
       let as_i = function Some (Int i) -> Some i | Some (Float f) -> Some (int_of_float f) | _ -> None in
       (match as_i (nth 0), as_i (nth 1) with
-       (* Row and column move the cursor only when both are present. *)
-       | Some r, Some col -> emit (Printf.sprintf "\027[%d;%dH" r col)
+       (* Row and column move the cursor only when both are present.  They are
+          emitted as u16, wrapping like the reference engine: a layout computed
+          against a zero-sized terminal produces negative coordinates, and
+          `\027[-6;-15H` is not the same bytes as `\027[65530;65521H`. *)
+       | Some r, Some col ->
+         emit (Printf.sprintf "\027[%d;%dH" (r land 0xFFFF) (col land 0xFFFF))
        | _ -> ());
+      let styled = ref false in
       (match as_i (nth 2) with
        | Some bks when bks > 0 ->
+         styled := true;
          if bks land 1 <> 0 then emit "\027[1m";
          if bks land 2 <> 0 then emit "\027[3m";
          if bks land 4 <> 0 then emit "\027[4m"
        | _ -> ());
       (match as_i (nth 3) with
-       | Some fg when fg > 0 -> emit (Printf.sprintf "\027[38;5;%dm" fg)
+       | Some fg when fg > 0 -> styled := true; emit (Printf.sprintf "\027[38;5;%dm" fg)
        | _ -> ());
       (match as_i (nth 4) with
-       | Some bg when bg > 0 -> emit (Printf.sprintf "\027[48;5;%dm" bg)
+       | Some bg when bg > 0 -> styled := true; emit (Printf.sprintf "\027[48;5;%dm" bg)
        | _ -> ());
-      Array.iter (fun g -> emit (display (g fr))) cs
+      Array.iter (fun g -> emit (display (g fr))) cs;
+      (* Style applies to this write only: reset after it, or the colour bleeds
+         into everything printed later. *)
+      if !styled then emit "\027[0m"
 
   | TuiBlock body ->
     push_scope c;

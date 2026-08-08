@@ -473,9 +473,14 @@ and parse_coll_postfix p (e : expr) : expr option =
   | TPropErr -> ignore (advance p); Some (PropE e)
   | TDollarBracket ->
     ignore (advance p);
-    let a = parse_add p in
+    (* Either end may be omitted: `$[2..]` runs to the end, `$[..3]` from the
+       start.  -1 is the last element, so the open end needs no length. *)
+    let a = if peek p = TDotDot then ILit 1 else parse_add p in
     let b =
-      if peek p = TDotDot then begin ignore (advance p); parse_add p end
+      if peek p = TDotDot then begin
+        ignore (advance p);
+        if peek p = TRBracket then ILit (-1) else parse_add p
+      end
       else if peek p = TColon then begin
         (* `$[start:count]` is the count-based spelling of `$[start..start+count-1]` *)
         ignore (advance p);
@@ -514,13 +519,21 @@ and parse_coll_operand p =
     let e = ref (parse_primary p) in
     let fin = ref false in
     while not !fin do
+      (* Same line rule as parse_postfix: a `[` on the next line opens the next
+         statement.  `colores = colores $+ COMIDA` followed by `[a, b] = …`
+         must not read the destructuring pattern as an index. *)
+      let same_line = p.pos = 0 || line p = p.toks.(p.pos - 1).line in
       match peek p with
+      | (TLBracket | TLParen) when not same_line -> fin := true
       | TLBracket when is_nav_index p -> e := parse_nav p !e
       | TLBracket ->
         ignore (advance p);
         let idx = parse_expr p in
         expect p TRBracket "']'";
         e := Index (!e, idx)
+      (* Field access binds tighter than the collection operator, so
+         `x $+ marco.CENTRADO` appends the constant, not the module. *)
+      | TDot -> ignore (advance p); e := Field (!e, ident p)
       | TLParen ->
         ignore (advance p);
         let args = ref [] in

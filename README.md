@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-401%2F532-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-405%2F532-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -117,7 +117,13 @@ bash tests/parity.sh --corpus -v    # ... and print each mismatch
 ```
 
 Key input is the exception: `<<|` needs a real terminal, so it is tested
-through a pty rather than a pipe — see [tests/tui/](tests/tui/).
+through a pty rather than a pipe — see [tests/tui/](tests/tui/).  The same
+harness runs whole TUI applications: the Snake game in `../serpiente` renders
+byte-identically under both engines, down to the escape sequences.
+
+```bash
+cd ../serpiente && ../zyml/zyml run serpiente.zy
+```
 
 `--corpus` expects a checkout of the Zymbol interpreter at `../interpreter`,
 and the reference `zymbol` binary on `PATH`.
@@ -127,7 +133,7 @@ zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
 **Status:** 20/20 on the local corpus.  On the reference corpus (532 files):
-**401 identical, 11 differing, 120 not yet supported.**
+**405 identical, 11 differing, 116 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
