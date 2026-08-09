@@ -60,7 +60,7 @@ paridad `tests/scripts/vm_compare.sh` no detecta ninguna de ellas.
 | B3 | Yuxtaposición concatena en `=`, `:=` y `<~` | — | — | — | Doc |
 | B4 | `#.N` devuelve Float, `#,.N` devuelve String | — | — | — | Doc |
 | B5 | `$!!` no propaga *en el lenguaje puro* | — | — | — | Doc |
-| C2 | `check` no verifica la aridad de `alias::fn` | ✗ | ✗ | — | Media |
+| C2 | ~~`check` no verifica la aridad de `alias::fn`~~ **resuelto v0.0.8** | ✓ | ✓ | ✓ | Media |
 
 `✓` = comportamiento que parece correcto · `✗` = incorrecto o divergente ·
 `~` = los tres difieren · `—` = los tres coinciden, el problema es de
@@ -518,6 +518,52 @@ justamente el camino que menos se prueba.
 > llamadas `alias::fn`. La información está disponible: el analizador ya
 > resuelve el módulo para saber que la función existe.
 
+### Resuelto en v0.0.8 (2026-08-08)
+
+Al implementarlo aparecieron **tres** huecos, no uno:
+
+1. `alias::fn` de módulos de usuario — el reportado aquí.
+2. `std::fn` — `math::sqrt(4.0, 9.0)` tampoco se verificaba, pese a que
+   `zymbol_common::stdlib` ya guardaba la aridad de cada función nativa.
+3. **La VM no verificaba nada.** `Instruction::Call` descartaba `arg_regs.len()`
+   y copiaba todos los argumentos a la ventana de registros del callee, así que
+   un argumento de más machacaba una local suya y el programa seguía; uno de
+   menos dejaba el parámetro en `Unit`. Por eso `math::sqrt(4.0, 9.0)` imprimía
+   `2` bajo `--vm` y lanzaba bajo el tree-walker.
+
+El punto 3 era una divergencia TW/VM que el gate de paridad no veía. Ahora hay
+corpus: `interpreter/tests/arity/` (6 casos). Ver REFERENCE.md L28.
+
+**Rust adoptó el comportamiento de zyml.** La primera versión del arreglo levantaba
+el error en el punto de llamada, y eso dejaba una incoherencia dentro del propio
+Rust: `zymbol run` rechazaba el programa entero ante `f(a,b)` local mal llamada,
+pero ejecutaba `m::f(a,b)` hasta el final si la llamada estaba en una rama muerta.
+El mismo error, dos comportamientos, según cómo estuviera escrita la llamada.
+
+La forma correcta es la que ya aplicaba el lenguaje a las llamadas locales, y la
+que zyml aplicaba a todas: **error semántico, fatal antes de ejecutar**, en
+`check`, `run` y `build`. Es lo que hay desde v0.0.8. La verificación es estática
+y un desajuste de aridad nunca es intencional, así que no hay caso legítimo que
+proteger.
+
+Con eso los tres motores coinciden en comportamiento — `rc=1`, sin salida,
+rechazo antes de ejecutar — y solo queda diferencia de **texto**:
+
+```
+Rust: error: function 's::saluda' expects 1 argument(s), but 2 were provided
+zyml: Compile error: 's::saluda' expects 1 argument(s), got 2
+```
+
+Eso cae en la misma categoría que las otras cuatro diferencias de redacción ya
+listadas, no en divergencia de comportamiento. `tests/parity.sh` las sigue
+contando **UNSUP** porque decide por el mensaje de zyml sin llegar a comparar:
+cinco de los 113 UNSUP actuales son de este tipo (ver README, *Correctness*).
+
+La VM conserva su `RaiseError` en el punto de llamada como red de seguridad para
+quien use compilador y VM por API sin análisis semántico; sin él,
+`Instruction::Call` sigue copiando el argumento sobrante sobre un registro del
+callee.
+
 # D. Asimetría menor
 
 ## D1 — Los patrones de lista de `??` fallan como ítem de `>>`
@@ -543,6 +589,59 @@ serlo.
 > **Recomendación**: aplicar la restricción de misma línea al valor del arm en
 > `parse_match_arm_value`. Coste bajo, y elimina una excepción que hoy hay que
 > conocer de memoria.
+
+## D2 — zyml aceptaba dos formas de escritura que Rust rechaza *(resuelto)*
+
+Encontradas el 2026-08-08 escribiendo pruebas de semántica de valor: el
+programa corría en zyml y no compilaba en Rust, que es la dirección menos
+habitual de divergencia y la peor, porque el gate no la ve.
+
+```zymbol
+copia[1]$~ v      // zyml: statement válido
+                  // Rust: error: expected '=' after index expression
+
+m[1][2] = 77      // zyml: asignación indexada anidada
+                  // Rust: error: expected '=' after index expression
+```
+
+**Ambas son incorrectas, y la razón está en el diseño del lenguaje, no en la
+comodidad del parser.** El anidamiento se navega con `>`, no encadenando
+corchetes: `m[i>j]` es la forma canónica de acceso (GUIDE §"Deprecated: Chained
+`arr[i][j]`" marca la encadenada como deprecada, y solo para *lectura*). Y una
+modificación tiene que declararse: en Zymbol no se pisa un valor por el hecho de
+alcanzarlo, hay que decir `$~`. `m[1][2] = 77` rompe las dos reglas a la vez.
+
+`copia[1]$~ v` suelto rompe otra cosa: `$~` es la forma **funcional**, devuelve
+una colección nueva y deja la original intacta. Como statement el resultado se
+descarta, así que la línea parece una modificación y no hace nada.
+
+> **Resuelto en zyml el 2026-08-09**: rechaza las dos, con un mensaje que apunta
+> a la forma correcta (`m = m[i>j]$~ value`). La lectura encadenada `m[1][2]`
+> sigue funcionando, porque sigue siendo válida —deprecada— en la referencia.
+> Regresión: `tests/rejects.sh`, enganchado a `make test`. Hace falta un test
+> propio porque `parity.sh` puntúa como `UNSUP` todo programa rechazado, así que
+> nunca habría visto ninguna de las dos.
+
+## D3 — ~~zyml no implementa la navegación profunda `[i>j]`~~ *(mal diagnosticado)*
+
+El diagnóstico original era falso. zyml **sí** implementa `[i>j]`, `[i>j>k]`,
+átomos negativos y átomos calculados, y da resultados idénticos a Rust en todos.
+Lo que faltaba era solo el **deep update**:
+
+```zymbol
+>> m[2>3] ¶          // ✅ ya funcionaba, idéntico a Rust
+d2 = d1[1>2]$~ 77    // ❌ Compile error: '$~' needs an indexed target
+```
+
+Es decir: zyml aceptaba la forma equivocada de modificar anidado (`m[1][2] = 77`,
+D2) y no soportaba la correcta. Empujaba al usuario hacia la sintaxis mala.
+
+> **Resuelto en zyml el 2026-08-09**: `Update (Nav (base, NPath steps), v)`
+> desciende desenganchando cada nivel —la misma disciplina de copy-on-write que
+> usa la asignación indexada— y escribe la hoja. Solo pasos escalares, como
+> manda GUIDE.md; un rango en la ruta cae al error de siempre. Subió un fichero
+> del corpus de referencia de `UNSUP` a `PASS` (414 → 415). Regresión:
+> `tests/cases/22_deep_update.zy`.
 
 ---
 

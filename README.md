@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-413%2F531-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-415%2F538-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -47,6 +47,21 @@ Read the 128× as a fact about the tree-walker, not about zyml: array indexing
 in a loop is pathological there.  The honest headline is **5–7× the
 tree-walker, 1–4× the VM**, and near-parity with the VM on string-heavy work
 where both are bound by allocation.
+
+**Every program above fits in a few slots, which is why none of them caught the
+engine's worst case.**  Copying a large aggregate did not appear in this table
+at all, and it is what a real program does most: a Go board is copied once per
+legality test.  Two programs that differ only in whether they write to the copy:
+
+| 20 000 × copy a 361-cell array | rust vm | zyml before | zyml now |
+| --- | --- | --- | --- |
+| and never write to it | 0.014 s | 0.078 s | **0.008 s** |
+| and write one cell | 0.044 s | 0.077 s | **0.046 s** |
+
+The old engine charged the same either way — it copied on assignment, so the
+read-only case paid for a copy nobody used.  That is the measurement that
+motivated copy-on-write, and it is deterministic, which the Go harness below
+is not.
 
 `bash bench/run.sh` reproduces the table.  `./zyml bench FILE N` separates
 compile time from run time — compilation of every program here is under 0.1 ms.
@@ -86,6 +101,15 @@ work out of the hot path:
 * **Constant folding.**  Literal arithmetic and interpolation-free strings are
   evaluated during compilation — except when folding would raise, so that
   `10 / 0` still fails at run time where a `!?` block can catch it.
+* **Copy-on-write aggregates.**  Zymbol assignment has value semantics: after
+  `b = a`, writing `a[1] = 99` must leave `b` alone.  This engine used to get
+  that by deep-copying on assignment, which meant a Go board was copied in full
+  once per legality test — 361 cells for a board most of those tests only read.
+  An array now lives in a box that records whether it is shared, assignment
+  shares it in O(1), and the first writer through a shared box detaches.
+  Detaching also re-boxes the aggregate cells, so `b = a` followed by
+  `a[1][2] = 99` cannot move `b`'s inner array; a write path detaches every
+  level it passes through, not only the one it lands on.
 
 Emitting real machine code (mmap + x86-64 via a small C stub) is possible from
 OCaml and would be the natural next step for numeric inner loops.  That would
@@ -111,10 +135,19 @@ Correctness is defined differentially: a program is correct when `zyml run`
 produces byte-identical stdout to `zymbol run`.
 
 ```bash
-make test        # this project's own corpus
+make test        # this project's own corpus, plus the rejection cases
 make corpus      # every .zy in ../interpreter/tests
+make rejects     # only the forms zyml must refuse
 bash tests/parity.sh --corpus -v    # ... and print each mismatch
 ```
+
+`tests/rejects.sh` exists because `parity.sh` structurally cannot see one class
+of bug: a program zyml accepts and the reference engine refuses is scored
+`UNSUP` and skipped, so the divergence that matters most — code that runs here
+and does not compile there — is exactly the one the differential test is blind
+to.  It caught two: chained indexed assignment (`m[i][j] = v`) and `$~` used as
+a statement.  Both are refused now; see D2 in the audit for why the language
+does not want either.
 
 Key input is the exception: `<<|` needs a real terminal, so it is tested
 through a pty rather than a pipe — see [tests/tui/](tests/tui/).  The same
@@ -132,8 +165,8 @@ Three outcomes.  `DIFF` — both engines ran and disagreed — is a bug.  `UNSUP
 zyml refused to compile — is a feature not built yet, and is the progress
 metric.  `PASS` is byte-identical output.
 
-**Status:** 20/20 on the local corpus.  On the reference corpus (531 files):
-**413 identical, 11 differing, 107 not yet supported.**
+**Status:** 20/20 on the local corpus.  On the reference corpus (538 files):
+**415 identical, 11 differing, 112 not yet supported.**
 
 Two groups are excluded from that count because their output is not a function
 of the program: `input/`, which reads stdin, and anything importing `lib_time`,
@@ -149,6 +182,29 @@ The 11 differences are all accounted for, and none is a wrong answer:
   them.
 * **4** are error-value edge cases and error *message* wording, where the kind
   matches but the text is this engine's own.
+
+### `UNSUP` over-counts by five
+
+`UNSUP` is decided by one test: zyml exited non-zero with a `Compile error:`
+line.  That reads every refusal as "feature not built yet", which is wrong for
+five of the six `tests/arity/` files it refuses (the sixth is a module file
+invoked directly, which is `UNSUP` for the right reason).  zyml *has* the
+arity check — it is
+what caught `ZethyCLI/main.zy` — and **Rust adopted zyml's behaviour** in
+v0.0.8: an argument-count mismatch is now a semantic error, fatal before
+execution, in `check`, `run` and `build`, for `f()`, `alias::f()` and
+`std::f()` alike (REFERENCE.md L28).
+
+Both engines now refuse those programs with `rc=1` and no output, including the
+one whose bad call sits on a branch that can never run.  Only the message
+wording differs (`Compile error: 's::saluda' expects 1 argument(s), got 2` vs
+`error: function 's::saluda' expects 1 argument(s), but 2 were provided`), which
+is the same category as the four wording differences already listed above — not a
+behavioural divergence.  They are counted as `UNSUP` only because the classifier
+never gets as far as comparing.
+
+Of the remaining 107, **54** are module files invoked directly, which zyml
+refuses by design.
 
 ## Implemented
 
@@ -218,6 +274,14 @@ four different results in four engines.
 
 They are written up, with reproductions and a recommendation each, in
 [es/auditoria_motores.md](es/auditoria_motores.md) (Spanish).
+
+One finding from that audit has since been fixed in Rust because zyml raised it.
+zyml refused `ZethyCLI/main.zy` over `ui::show_error("...", host)` — two
+arguments to a one-parameter function — which `zymbol check` accepted.  Chasing
+it down turned up three gaps at once: neither `alias::fn` nor `std::fn` calls
+were arity-checked, and the VM did not check at all, copying surplus arguments
+over the callee's own registers and running on.  Fixed in v0.0.8, with
+`interpreter/tests/arity/` as the regression corpus (audit item C2).
 
 zyml deliberately reproduces two of those bugs, because its definition of
 correctness is "byte-identical to `zymbol run`" and the tree-walker is what
