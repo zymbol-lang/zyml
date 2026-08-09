@@ -1,0 +1,33 @@
+// `m[i>j]$~ v` — the canonical way to change a nested element.
+//
+// Navigation with `>` selects it, `$~` states the intent to modify, and the
+// result is a new value: the original is untouched.  There is deliberately no
+// `m[i][j] = v` in the language — that would nest by chaining brackets instead
+// of navigating, and would modify without saying so.
+m  = [[1, 2], [3, 4]]
+m2 = m[1>2]$~ 99
+>> "origen  " m ¶
+>> "nuevo   " m2 ¶
+
+cubo  = [[[1,2],[3,4]], [[5,6],[7,8]]]
+cubo2 = cubo[1>2>1]$~ 77
+>> "prof3 o " cubo ¶
+>> "prof3 n " cubo2 ¶
+
+// negative and computed atoms
+g  = [[1,2,3], [4,5,6]]
+g2 = g[-1>-1]$~ 0
+>> "neg     " g2 ¶
+n = 2
+g3 = g[n>(n+1)]$~ 42
+>> "calc    " g3 ¶
+
+// one level, still the plain form
+a  = [1,2,3]
+a2 = a[2]$~ 9
+>> "1nivel  " a " / " a2 ¶
+
+// aliasing: the source must survive a deep update through a copy
+b = m
+b2 = b[1>1]$~ 555
+>> "alias   m=" m " b=" b " b2=" b2 ¶

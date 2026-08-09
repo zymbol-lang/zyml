@@ -10,7 +10,7 @@ MODULES = value ast lexer parser stdlib_zy compile main
 CMX = $(addprefix src/,$(addsuffix .cmx,$(MODULES)))
 BIN = zyml
 
-.PHONY: all clean test corpus bench
+.PHONY: all clean test corpus rejects bench
 
 all: $(BIN)
 
@@ -31,10 +31,15 @@ src/main.cmx: src/main.ml src/parser.cmx src/compile.cmx
 
 test: $(BIN)
 	@bash tests/parity.sh
+	@bash tests/rejects.sh
 
 # The full reference corpus: ../interpreter/tests/**/*.zy
 corpus: $(BIN)
 	@bash tests/parity.sh --corpus
+
+# Forms zyml must refuse, which parity.sh cannot see (a refused program is UNSUP)
+rejects: $(BIN)
+	@bash tests/rejects.sh
 
 bench: $(BIN)
 	@bash bench/run.sh

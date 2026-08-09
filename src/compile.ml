@@ -284,11 +284,11 @@ and comp_expr (c : ctx) (e : expr) : code =
 
   | ArrLit items ->
     let cs = Array.of_list (List.map (comp_expr c) items) in
-    fun fr -> Arr (Array.map (fun g -> copy_val (g fr)) cs)
+    fun fr -> arr (Array.map (fun g -> copy_val (g fr)) cs)
 
   | TupLit items ->
     let cs = Array.of_list (List.map (comp_expr c) items) in
-    fun fr -> Tup (Array.map (fun g -> copy_val (g fr)) cs)
+    fun fr -> tup (Array.map (fun g -> copy_val (g fr)) cs)
 
   | Un (Neg, ILit i) -> let v = Int (-i) in fun _ -> v
   | Un (Neg, FLit f) -> let v = Float (-.f) in fun _ -> v
@@ -302,7 +302,7 @@ and comp_expr (c : ctx) (e : expr) : code =
     let f = bin_fn op in
     fun fr -> f (ga fr) (gb fr)
   | Append (Hot (px, n), v) ->
-    let ga = comp_hot c px n (Arr [||]) and gv = comp_expr c v in
+    let ga = comp_hot c px n (arr [||]) and gv = comp_expr c v in
     fun fr -> append (ga fr) (gv fr)
 
   | Bin (And, a, b) ->
@@ -399,7 +399,7 @@ and comp_expr (c : ctx) (e : expr) : code =
     fun fr ->
       let cmpf = gf fr in
       (match gx fr with
-       | Arr a ->
+       | Arr { c = a; _ } ->
          let b = Array.copy a in
          (* The comparator answers "does x come before y?", so it yields only a
             strict order; ties keep their original position. *)
@@ -407,23 +407,23 @@ and comp_expr (c : ctx) (e : expr) : code =
              if as_bool (invoke cmpf [| x; y |]) then -1
              else if as_bool (invoke cmpf [| y; x |]) then 1
              else 0) b;
-         Arr b
+         arr b
        | v -> err "cannot sort %s" (type_name v))
   | Map (x, f) ->
     let gx = comp_expr c x and gf = comp_expr c f in
     fun fr ->
       let fv = gf fr in
       (match gx fr with
-       | Arr a -> Arr (Array.map (fun v -> invoke fv [| v |]) a)
-       | Tup a -> Tup (Array.map (fun v -> invoke fv [| v |]) a)
-       | Str s -> Arr (Array.map (fun ch -> invoke fv [| Chr ch |]) (utf8_chars s))
+       | Arr { c = a; _ } -> arr (Array.map (fun v -> invoke fv [| v |]) a)
+       | Tup { c = a; _ } -> tup (Array.map (fun v -> invoke fv [| v |]) a)
+       | Str s -> arr (Array.map (fun ch -> invoke fv [| Chr ch |]) (utf8_chars s))
        | v -> err "cannot map over %s" (type_name v))
   | Filter (x, f) ->
     let gx = comp_expr c x and gf = comp_expr c f in
     fun fr ->
       let fv = gf fr in
       (match gx fr with
-       | Arr a -> Arr (Array.of_list
+       | Arr { c = a; _ } -> arr (Array.of_list
                          (List.filter (fun v -> as_bool (invoke fv [| v |]))
                             (Array.to_list a)))
        | v -> err "cannot filter %s" (type_name v))
@@ -432,7 +432,7 @@ and comp_expr (c : ctx) (e : expr) : code =
     fun fr ->
       let fv = gf fr and acc = ref (gi fr) in
       (match gx fr with
-       | Arr a -> Array.iter (fun v -> acc := invoke fv [| !acc; v |]) a; !acc
+       | Arr { c = a; _ } -> Array.iter (fun v -> acc := invoke fv [| !acc; v |]) a; !acc
        | v -> err "cannot reduce %s" (type_name v))
   | Split (x, sep) ->
     let gx = comp_expr c x and gs = comp_expr c sep in
@@ -457,17 +457,62 @@ and comp_expr (c : ctx) (e : expr) : code =
     fun fr ->
       let target = copy_val (gb fr) in
       let key = gi fr in
+      (* [target] came from [copy_val], which now shares rather than copies, so
+         the cells have to be detached before anything is written into them. *)
       (match target, key with
-       | Arr a, Int i -> a.(real_index i (Array.length a)) <- copy_val (gv fr); Arr a
-       | Tup a, Int i -> a.(real_index i (Array.length a)) <- copy_val (gv fr); Tup a
-       | NTup (n, a), Int i -> a.(real_index i (Array.length a)) <- copy_val (gv fr); NTup (n, a)
+       | Arr b, Int i ->
+         let a = writable b in
+         a.(real_index i (Array.length a)) <- copy_val (gv fr); Arr b
+       | Tup b, Int i ->
+         let a = writable b in
+         a.(real_index i (Array.length a)) <- copy_val (gv fr); Tup b
+       | NTup (n, b), Int i ->
+         let a = writable b in
+         a.(real_index i (Array.length a)) <- copy_val (gv fr); NTup (n, b)
        (* A named tuple may also be addressed by field name, which is what makes
           `person["age"]$~ 26` work when the field is chosen at run time. *)
-       | NTup (n, a), Str f ->
+       | NTup (n, b), Str f ->
          (match Array.find_index (fun x -> String.equal x f) n with
-          | Some k -> a.(k) <- copy_val (gv fr); NTup (n, a)
+          | Some k -> (writable b).(k) <- copy_val (gv fr); NTup (n, b)
           | None -> errk "Index" "named tuple has no field '%s'" f)
        | x, _ -> err "cannot update %s" (type_name x))
+  (* `m[i>j]$~ v` — deep functional update.  The canonical way to change a
+     nested element: navigation selects the element, `$~` states the intent to
+     modify, and the result is a new value with the original left alone.
+     GUIDE.md restricts the path to scalar steps, so a range in it falls
+     through to the error below rather than silently doing something else. *)
+  | Update (Nav (base, NPath steps), v)
+    when List.for_all (function NIdx _ -> true | NRange _ -> false) steps ->
+    let gb = comp_expr c base
+    and gsteps =
+      List.map (function NIdx e -> comp_expr c e | NRange _ -> assert false) steps
+    and gv = comp_expr c v in
+    fun fr ->
+      let root = copy_val (gb fr) in
+      (* Descend detaching every level, exactly as an indexed store does: the
+         copy is shared, so writing without detaching would reach the source. *)
+      let rec go container = function
+        | [] -> assert false
+        | [ gi ] ->
+          (match container, gi fr with
+           | (Arr b | Tup b | NTup (_, b)), Int i ->
+             let a = writable b in
+             a.(real_index i (Array.length a)) <- copy_val (gv fr)
+           | NTup (n, b), Str f ->
+             (match Array.find_index (fun x -> String.equal x f) n with
+              | Some k -> (writable b).(k) <- copy_val (gv fr)
+              | None -> errk "Index" "named tuple has no field '%s'" f)
+           | x, _ -> err "cannot update %s" (type_name x))
+        | gi :: rest ->
+          (match container with
+           | Arr b | Tup b | NTup (_, b) ->
+             let a = writable b in
+             go a.(real_index (int_arg "index" (gi fr)) (Array.length a)) rest
+           | x -> err "cannot update %s" (type_name x))
+      in
+      go root gsteps;
+      root
+
   | Update _ -> cerr "'$~' needs an indexed target, as in arr[i]$~ value"
 
   (* ------------------------------------------------------- casts and format *)
@@ -518,7 +563,7 @@ and comp_expr (c : ctx) (e : expr) : code =
   | NTupLit fields ->
     let names = Array.of_list (List.map fst fields) in
     let cs = Array.of_list (List.map (fun (_, e) -> comp_expr c e) fields) in
-    fun fr -> NTup (names, Array.map (fun g -> copy_val (g fr)) cs)
+    fun fr -> ntup names (Array.map (fun g -> copy_val (g fr)) cs)
   | Field (e, name) ->
     let g = comp_expr c e in
     fun fr -> field_get (g fr) name
@@ -825,14 +870,14 @@ and comp_pattern (c : ctx) (pat : pattern) : (frame -> value -> bool) =
     let g = comp_expr c (Var name) in
     fun fr v ->
       (match g fr with
-       | Arr a -> Array.exists (fun x -> eq x v) a
+       | Arr { c = a; _ } -> Array.exists (fun x -> eq x v) a
        | bound -> eq v bound)
   | PList items ->
     let ts = Array.of_list (List.map (comp_pattern c) items) in
     let n = Array.length ts in
     fun fr v ->
       (match v with
-       | Arr a ->
+       | Arr { c = a; _ } ->
          Array.length a = n
          && (let ok = ref true in
              Array.iteri (fun i x -> if !ok && not ((Array.unsafe_get ts i) fr x) then ok := false) a;
@@ -859,7 +904,7 @@ and walk_path fr steps v acc =
   | `R (ga, gb) :: rest ->
     let a = int_arg "range start" (ga fr) and b = int_arg "range end" (gb fr) in
     (match slice_val v a b with
-     | Arr xs -> Array.iter (fun x -> walk_path fr rest x acc) xs
+     | Arr { c = xs; _ } -> Array.iter (fun x -> walk_path fr rest x acc) xs
      | x -> walk_path fr rest x acc)
 
 and has_range steps = List.exists (function `R _ -> true | `I _ -> false) steps
@@ -869,13 +914,13 @@ and has_range steps = List.exists (function `R _ -> true | `I _ -> false) steps
 and run_path fr steps (v : value) : value =
   let acc = ref [] in
   walk_path fr steps v acc;
-  if has_range steps then Arr (Array.of_list (List.rev !acc))
-  else match !acc with [ x ] -> x | l -> Arr (Array.of_list (List.rev l))
+  if has_range steps then arr (Array.of_list (List.rev !acc))
+  else match !acc with [ x ] -> x | l -> arr (Array.of_list (List.rev l))
 
 (* Flat forms concatenate: a step that produced an array contributes its
    elements, a scalar contributes itself. *)
 and flatten_into acc = function
-  | Arr xs -> Array.iter (fun x -> acc := x :: !acc) xs
+  | Arr { c = xs; _ } -> Array.iter (fun x -> acc := x :: !acc) xs
   | v -> acc := v :: !acc
 
 and comp_nav c base spec : code =
@@ -890,15 +935,15 @@ and comp_nav c base spec : code =
     fun fr ->
       let v = gb fr and acc = ref [] in
       List.iter (fun s -> flatten_into acc (run_path fr s v)) ps;
-      Arr (Array.of_list (List.rev !acc))
+      arr (Array.of_list (List.rev !acc))
   | NStruct groups ->
     let gs = List.map (fun g -> List.map path g) groups in
     fun fr ->
       let v = gb fr in
-      Arr (Array.of_list (List.map (fun g ->
+      arr (Array.of_list (List.map (fun g ->
           let acc = ref [] in
           List.iter (fun s -> flatten_into acc (run_path fr s v)) g;
-          Arr (Array.of_list (List.rev !acc))) gs))
+          arr (Array.of_list (List.rev !acc))) gs))
 
 (* ---------------------------------------------------------------- lambdas *)
 
@@ -1013,17 +1058,28 @@ and comp_store (c : ctx) (lv : lvalue) : (frame -> value -> unit) =
   | LHot (prefix, name) ->
     let i = hot_slot c prefix name in
     fun fr v -> fr.slots.(i) <- v
+  (* `m[i][j] = v` is not a Zymbol form.  Nesting is navigated with `>`, not by
+     chaining brackets, and a modification has to say so with `$~` — writing
+     through two levels of index does neither.  The canonical line is
+     `m = m[i>j]$~ v`.  The reference engine has never parsed this; zyml did,
+     which meant a program written here would not compile there. *)
+  | LIndex (LIndex _, _) ->
+    cerr "nested indexed assignment is not a Zymbol form; \
+          navigate with '>' and state the intent with '$~', as in `m = m[i>j]$~ value`"
   | LIndex (base, idx) ->
     let gb = comp_lvalue_read c base and gi = comp_expr c idx in
     fun fr v ->
       let container = gb fr in
       (match container, gi fr with
-       | Arr a, Int i -> a.(real_index i (Array.length a)) <- v
+       | Arr b, Int i ->
+         let a = writable b in
+         a.(real_index i (Array.length a)) <- v
        | Arr _, x -> err "index must be an integer, got %s" (type_name x)
        | x, _ -> err "cannot assign into %s" (type_name x))
 
 (* Reading the container an indexed store writes through: it must be the live
-   aggregate, never a copy. *)
+   aggregate, never a copy.
+   Only [comp_store] calls this, so every read here is on a write path. *)
 and comp_lvalue_read (c : ctx) (lv : lvalue) : code =
   match lv with
   | LHot (prefix, name) -> comp_hot c prefix name (Int 0)
@@ -1036,7 +1092,16 @@ and comp_lvalue_read (c : ctx) (lv : lvalue) : code =
      | RFunc _ | RNone -> cerr "undefined variable: '%s'" name)
   | LIndex (base, idx) ->
     let gb = comp_lvalue_read c base and gi = comp_expr c idx in
-    fun fr -> index_get (gb fr) (gi fr)
+    (* `a[1][2] = 99` has to detach *every* level, not just the one written.
+       Reading the child out of a still-shared parent would hand back a box the
+       other holder can see, and the write would land in both. Detaching is a
+       flag test when nothing is shared, which is the common case. *)
+    fun fr ->
+      let container = gb fr in
+      (match container with
+       | Arr b | Tup b | NTup (_, b) -> ignore (writable b)
+       | _ -> ());
+      index_get container (gi fr)
 
 (* -------------------------------------------------------------- statements *)
 
@@ -1046,6 +1111,13 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
      path strips the wrapper and emits the store inline instead, because an
      extra closure per statement costs several times what the store does. *)
   | At (_, inner) -> comp_stmt c inner
+  (* `arr[i]$~ v` on its own line changes nothing: `$~` is the *functional*
+     update, it returns a new collection and leaves the original alone.  Written
+     as a statement the result is dropped, so the line reads like a modification
+     and is a no-op.  The reference engine rejects it in the parser; rejecting it
+     here keeps a program that runs under zyml running under `zymbol run`. *)
+  | ExprStmt (Update _) ->
+    cerr "'$~' returns a new collection; assign it, as in `arr = arr[i]$~ value`"
   | ExprStmt e -> let g = comp_expr c e in fun fr -> ignore (g fr)
 
   | Assign (LVar name, e) when lookup_local c name = None
@@ -1189,7 +1261,7 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
            | DRest n -> `Rest (comp_store c (LVar n))) slots in
        fun fr ->
          let items = match g fr with
-           | Arr a | Tup a | NTup (_, a) -> a
+           | Arr { c = a; _ } | Tup { c = a; _ } | NTup (_, { c = a; _ }) -> a
            | v -> errk "Type" "cannot destructure %s" (type_name v)
          in
          let i = ref 0 in
@@ -1201,7 +1273,7 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
                incr i
              | `Rest store ->
                let n = Array.length items - !i in
-               store fr (Arr (Array.map copy_val
+               store fr (arr (Array.map copy_val
                                 (Array.sub items !i (max n 0))));
                i := Array.length items)
            stores
@@ -1222,7 +1294,7 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
   (* `>< args` — the arguments after the script name, as a string array. *)
   | CliArgs name ->
     let st = comp_store c (LVar name) in
-    let args = Arr (Array.of_list (List.map (fun s -> Str s) !script_args)) in
+    let args = arr (Array.of_list (List.map (fun s -> Str s) !script_args)) in
     fun fr -> st fr (copy_val args)
 
   | ClearScreen -> fun _ -> emit "\027[2J\027[1;1H"
@@ -1235,7 +1307,7 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
       let vals = match gs with
         | [ Some g ] ->
           (match g fr with
-           | Tup a | NTup (_, a) -> Array.to_list (Array.map (fun v -> Some v) a)
+           | Tup { c = a; _ } | NTup (_, { c = a; _ }) -> Array.to_list (Array.map (fun v -> Some v) a)
            | v -> [ Some v ])
         | gs -> List.map (Option.map (fun g -> g fr)) gs
       in
@@ -1476,9 +1548,9 @@ and comp_loop c label head body =
   | `Each (slot, g) ->
     guard (fun fr ->
         match g fr with
-        | Arr a -> Array.iter (fun x -> fr.slots.(slot) <- x; step fr) a
+        | Arr { c = a; _ } -> Array.iter (fun x -> fr.slots.(slot) <- x; step fr) a
         | Str s -> Array.iter (fun ch -> fr.slots.(slot) <- Chr ch; step fr) (utf8_chars s)
-        | Tup a -> Array.iter (fun x -> fr.slots.(slot) <- x; step fr) a
+        | Tup { c = a; _ } -> Array.iter (fun x -> fr.slots.(slot) <- x; step fr) a
         | v -> err "cannot iterate over %s" (type_name v))
   | `Range (slot, ga, gb, gs) ->
     guard (fun fr ->

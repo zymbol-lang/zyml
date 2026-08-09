@@ -212,7 +212,7 @@ let io_fns = [
           let d = text "list" a.(0) in
           let entries = Sys.readdir d in
           Array.sort compare entries;
-          Arr (Array.map (fun e -> Str e) entries)));
+          arr (Array.map (fun e -> Str e) entries)));
   ("mkdir", 1, fun a -> with_io (fun () -> mkdir_p (text "mkdir" a.(0)); Unit));
 ]
 
@@ -296,7 +296,7 @@ let json_decode (src : string) : value =
           else begin expect '}'; fin := true end
         done
       end;
-      NTup (Array.of_list (List.rev !names), Array.of_list (List.rev !vals))
+      ntup (Array.of_list (List.rev !names)) (Array.of_list (List.rev !vals))
     | '[' ->
       incr i; skip ();
       let items = ref [] in
@@ -310,7 +310,7 @@ let json_decode (src : string) : value =
           else begin expect ']'; fin := true end
         done
       end;
-      Arr (Array.of_list (List.rev !items))
+      arr (Array.of_list (List.rev !items))
     | 't' -> i := !i + 4; Bool true
     | 'f' -> i := !i + 5; Bool false
     | 'n' -> i := !i + 4; Unit
@@ -351,9 +351,9 @@ let rec json_encode (v : value) : string =
   | Float f -> float_repr f
   | Bool b -> if b then "true" else "false"
   | Unit -> "null"
-  | Arr a | Tup a ->
+  | Arr { c = a; _ } | Tup { c = a; _ } ->
     "[" ^ String.concat "," (Array.to_list (Array.map json_encode a)) ^ "]"
-  | NTup (names, vals) ->
+  | NTup (names, { c = vals; _ }) ->
     "{" ^ String.concat ","
       (List.mapi (fun i k -> quote k ^ ":" ^ json_encode vals.(i))
          (Array.to_list names)) ^ "}"
@@ -363,19 +363,19 @@ let rec json_encode (v : value) : string =
    mechanism behind data-level i18n. *)
 let rec rename_keys (mapping : (string * string) list) (v : value) : value =
   match v with
-  | NTup (names, vals) ->
-    NTup (Array.map (fun k -> match List.assoc_opt k mapping with
-        | Some k' -> k' | None -> k) names,
-          Array.map (rename_keys mapping) vals)
-  | Arr a -> Arr (Array.map (rename_keys mapping) a)
+  | NTup (names, { c = vals; _ }) ->
+    ntup (Array.map (fun k -> match List.assoc_opt k mapping with
+        | Some k' -> k' | None -> k) names)
+      (Array.map (rename_keys mapping) vals)
+  | Arr { c = a; _ } -> arr (Array.map (rename_keys mapping) a)
   | v -> v
 
 let mapping_of = function
-  | NTup (names, vals) ->
+  | NTup (names, { c = vals; _ }) ->
     Array.to_list (Array.mapi (fun i k -> (k, display vals.(i))) names)
-  | Arr a ->
+  | Arr { c = a; _ } ->
     Array.to_list a |> List.filter_map (function
-        | Tup [| a; b |] -> Some (display a, display b)
+        | Tup { c = [| a; b |]; _ } -> Some (display a, display b)
         | _ -> None)
   | v -> errk "Type" "decode_map expects a mapping, got %s" (type_name v)
 
@@ -404,10 +404,10 @@ let shell_quote s =
 (* Headers arrive as an array of ("name", "value") pairs. *)
 let header_args v =
   match v with
-  | Arr items | Tup items ->
+  | Arr { c = items; _ } | Tup { c = items; _ } ->
     Array.to_list items
     |> List.filter_map (function
-        | Tup [| k; x |] | NTup (_, [| k; x |]) ->
+        | Tup { c = [| k; x |]; _ } | NTup (_, { c = [| k; x |]; _ }) ->
           Some (" -H " ^ shell_quote (as_text k ^ ": " ^ as_text x))
         | _ -> None)
     |> String.concat ""

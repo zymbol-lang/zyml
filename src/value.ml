@@ -13,9 +13,9 @@ type value =
   | Bool of bool
   | Str of string                   (* UTF-8 *)
   | Chr of string                   (* exactly one UTF-8 character *)
-  | Arr of value array
-  | Tup of value array
-  | NTup of string array * value array   (* named tuple: (x: 1, y: 2) *)
+  | Arr of cells
+  | Tup of cells
+  | NTup of string array * cells    (* named tuple: (x: 1, y: 2) *)
   | Fun of funcval
   | Lam of lamval
   (* A first-class error value: kind and message.  Only `std/*` produces these
@@ -58,6 +58,27 @@ and frame = {
 }
 
 and code = frame -> value
+
+(* The backing store of an aggregate, shared until someone writes.
+
+   Zymbol assignment has value semantics: after `b = a`, writing `a[1] = 99`
+   must leave `b` alone.  The obvious way to get that is to copy on assignment,
+   which is what this engine did — and it is why a Go board copied once per
+   legality test cost more here than in the register VM: 361 cells copied for a
+   board nobody ever wrote to.
+
+   So the copy moves to the write.  [c] is the cell array, possibly reachable
+   from another [cells] box; [shared] says so.  Two boxes may point at one
+   array, but a box is never itself pointed at twice — that is what lets a
+   writer detach without having to find and update whoever else held it. *)
+and cells = { mutable c : value array; mutable shared : bool }
+
+(* A fresh box: this array has exactly one owner.  Every aggregate an operation
+   *creates* is unshared by definition — only assignment shares. *)
+let box a = { c = a; shared = false }
+let arr a = Arr (box a)
+let tup a = Tup (box a)
+let ntup n a = NTup (n, box a)
 
 (* ------------------------------------------------------------- control flow *)
 
@@ -299,7 +320,7 @@ and display v =
   | Str s -> s
   | Chr c -> c
   | Unit -> ""
-  | Arr a ->
+  | Arr { c = a; _ } ->
     let b = Buffer.create 32 in
     Buffer.add_char b '[';
     Array.iteri (fun i x ->
@@ -307,7 +328,7 @@ and display v =
         Buffer.add_string b (display_nested x)) a;
     Buffer.add_char b ']';
     Buffer.contents b
-  | Tup a ->
+  | Tup { c = a; _ } ->
     let b = Buffer.create 32 in
     Buffer.add_char b '(';
     Array.iteri (fun i x ->
@@ -315,7 +336,7 @@ and display v =
         Buffer.add_string b (display_nested x)) a;
     Buffer.add_char b ')';
     Buffer.contents b
-  | NTup (names, vals) ->
+  | NTup (names, { c = vals; _ }) ->
     let b = Buffer.create 32 in
     Buffer.add_char b '(';
     Array.iteri (fun i x ->
@@ -353,8 +374,8 @@ let type_meta v =
     | Float f -> String.length (float_repr f)
     | Str s -> String.length s
     | Chr _ | Bool _ -> 1
-    | Arr a | Tup a -> Array.length a
-    | NTup (_, v) -> Array.length v
+    | Arr { c = a; _ } | Tup { c = a; _ } -> Array.length a
+    | NTup (_, { c = v; _ }) -> Array.length v
     | Fun f -> f.arity
     | Lam l -> l.lparams
     (* Documented as "length of the error message" -- the message alone, not
@@ -362,18 +383,48 @@ let type_meta v =
     | Err (_, msg) -> String.length msg
     | Unit -> 0
   in
-  Tup [| Str (type_symbol v); Int size; v |]
+  tup [| Str (type_symbol v); Int size; v |]
 
 (* ------------------------------------------------------------ value copying *)
 
-(* Zymbol assignment has value semantics: `b = arr` copies, so a later
-   `arr[1] = 99` leaves `b` untouched.  Scalars are immutable already, so only
-   the aggregate constructors need a real copy. *)
-let rec copy_val v =
+(* A second box over the same array.  Both are marked, because neither may write
+   through it without detaching first. *)
+let share b = b.shared <- true; { c = b.c; shared = true }
+
+(* The cell array of [b], safe to write into.
+
+   Detaching copies the array — and hands every aggregate cell its own box over
+   the same child array.  Skipping that second step is the subtle way to get
+   this wrong: `b = a` then `a[1][2] = 99` would find the *same* inner box under
+   both names, and detaching it in place would move `b`'s inner array too.  A
+   fresh box per child means a writer can only ever detach its own path. *)
+let writable b =
+  if b.shared then begin
+    (* [Array.copy] first and re-box in a second pass: it is a block copy, where
+       [Array.map] would allocate through a closure per cell.  The common case
+       is an array of scalars, where the second pass writes nothing at all. *)
+    let n = Array.copy b.c in
+    for i = 0 to Array.length n - 1 do
+      match Array.unsafe_get n i with
+      | Arr ch -> Array.unsafe_set n i (Arr (share ch))
+      | Tup ch -> Array.unsafe_set n i (Tup (share ch))
+      | NTup (nm, ch) -> Array.unsafe_set n i (NTup (nm, share ch))
+      | _ -> ()
+    done;
+    b.c <- n;
+    b.shared <- false
+  end;
+  b.c
+
+(* Zymbol assignment has value semantics: `b = arr` must leave `b` unaffected by
+   a later `arr[1] = 99`.  That used to mean a deep copy here; now it means
+   sharing the array and letting the first writer pay.  O(1) whatever the size,
+   and a board nobody writes to is never copied at all. *)
+let copy_val v =
   match v with
-  | Arr a -> Arr (Array.map copy_val a)
-  | Tup a -> Tup (Array.map copy_val a)
-  | NTup (n, a) -> NTup (n, Array.map copy_val a)
+  | Arr b -> Arr (share b)
+  | Tup b -> Tup (share b)
+  | NTup (n, b) -> NTup (n, share b)
   | _ -> v
 
 (* ------------------------------------------------------------- truthiness *)
@@ -448,7 +499,7 @@ let rec eq a b =
   (* A Char is never equal to a String, not even a one-character one:
      `"a" == 'a'` is `#0` in all three reference engines. *)
   | Unit, Unit -> true
-  | Arr x, Arr y | Tup x, Tup y | NTup (_, x), NTup (_, y) ->
+  | Arr { c = x; _ }, Arr { c = y; _ } | Tup { c = x; _ }, Tup { c = y; _ } | NTup (_, { c = x; _ }), NTup (_, { c = y; _ }) ->
     Array.length x = Array.length y &&
     (let ok = ref true in
      Array.iteri (fun i v -> if !ok && not (eq v y.(i)) then ok := false) x;
@@ -491,10 +542,10 @@ let real_index i len =
 
 let index_get container idx =
   match container, idx with
-  | Arr a, Int i -> a.(real_index i (Array.length a))
-  | Tup a, Int i -> a.(real_index i (Array.length a))
-  | NTup (_, a), Int i -> a.(real_index i (Array.length a))
-  | NTup (names, a), Str f ->
+  | Arr { c = a; _ }, Int i -> a.(real_index i (Array.length a))
+  | Tup { c = a; _ }, Int i -> a.(real_index i (Array.length a))
+  | NTup (_, { c = a; _ }), Int i -> a.(real_index i (Array.length a))
+  | NTup (names, { c = a; _ }), Str f ->
     (match Array.find_index (fun n -> String.equal n f) names with
      | Some k -> a.(k)
      | None -> errk "Index" "named tuple has no field '%s'" f)
@@ -503,17 +554,17 @@ let index_get container idx =
   | v, _ -> err "cannot index %s" (type_name v)
 
 let length_of = function
-  | Arr a | Tup a -> Array.length a
-  | NTup (_, a) -> Array.length a
+  | Arr { c = a; _ } | Tup { c = a; _ } -> Array.length a
+  | NTup (_, { c = a; _ }) -> Array.length a
   | Str s -> utf8_length s
   | v -> err "cannot take length of %s" (type_name v)
 
 (* `$+` — append for arrays, concatenation for strings. *)
 let append coll v =
   match coll with
-  | Arr a -> Arr (Array.append a [| copy_val v |])
-  | Tup a -> Tup (Array.append a [| copy_val v |])
-  | NTup (_, a) -> Tup (Array.append a [| copy_val v |])
+  | Arr { c = a; _ } -> arr (Array.append a [| copy_val v |])
+  | Tup { c = a; _ } -> tup (Array.append a [| copy_val v |])
+  | NTup (_, { c = a; _ }) -> tup (Array.append a [| copy_val v |])
   | Str s -> Str (s ^ display v)
   | c -> err "cannot append to %s" (type_name c)
 
@@ -527,11 +578,11 @@ let as_text v = match v with Str s -> s | Chr c -> c | v -> display v
 (* Arrays and tuples share every element-wise operator; the rebuild function
    keeps each one in its own constructor. *)
 let as_seq = function
-  | Arr a -> Some (a, fun x -> Arr x)
-  | Tup a -> Some (a, fun x -> Tup x)
+  | Arr { c = a; _ } -> Some (a, fun x -> arr x)
+  | Tup { c = a; _ } -> Some (a, fun x -> tup x)
   (* A named tuple keeps its labels only while the shape is unchanged; any
      operator that adds or drops elements degrades it to a positional tuple. *)
-  | NTup (n, a) -> Some (a, fun x -> if Array.length x = Array.length n then NTup (n, x) else Tup x)
+  | NTup (n, { c = a; _ }) -> Some (a, fun x -> if Array.length x = Array.length n then ntup n (x) else tup x)
   | _ -> None
 
 let str_find_all hay needle =
@@ -555,10 +606,10 @@ let find_all coll v =
     for i = Array.length a - 1 downto 0 do
       if eq a.(i) v then acc := Int (i + 1) :: !acc
     done;
-    Arr (Array.of_list !acc)
+    arr (Array.of_list !acc)
   | None ->
     match coll with
-    | Str s -> Arr (Array.of_list (List.map (fun i -> Int i) (str_find_all s (as_text v))))
+    | Str s -> arr (Array.of_list (List.map (fun i -> Int i) (str_find_all s (as_text v))))
     | c -> err "cannot search %s" (type_name c)
 
 let insert_at coll i v =
@@ -635,10 +686,10 @@ let remove_range coll a b =
 
 let sort_coll v ~asc =
   match v with
-  | Arr a ->
+  | Arr { c = a; _ } ->
     let b = Array.copy a in
     Array.stable_sort (fun x y -> if asc then cmp x y else cmp y x) b;
-    Arr b
+    arr b
   | c -> err "cannot sort %s" (type_name c)
 
 let split_str v sep =
@@ -653,7 +704,7 @@ let split_str v sep =
     end else begin Buffer.add_char b s.[!i]; incr i end
   done;
   parts := Buffer.contents b :: !parts;
-  Arr (Array.of_list (List.rev_map (fun x -> Str x) !parts))
+  arr (Array.of_list (List.rev_map (fun x -> Str x) !parts))
 
 let repeat_str v n =
   if n < 0 then err "repeat count must not be negative";
@@ -682,7 +733,7 @@ let replace_str v pat rep limit =
    elements. *)
 let build base items =
   match base with
-  | Arr a -> Arr (Array.append a (Array.of_list (List.map copy_val items)))
+  | Arr { c = a; _ } -> arr (Array.append a (Array.of_list (List.map copy_val items)))
   | b ->
     let buf = Buffer.create 64 in
     Buffer.add_string buf (display b);
@@ -833,7 +884,7 @@ let base_conv base v =
 (* `person.name` -- the only way to read a named tuple by label. *)
 let field_get v name =
   match v with
-  | NTup (names, vals) ->
+  | NTup (names, { c = vals; _ }) ->
     (match Array.find_index (fun n -> String.equal n name) names with
      | Some k -> vals.(k)
      | None -> errk "Index" "named tuple has no field '%s'" name)
@@ -846,7 +897,7 @@ let field_get v name =
    answer is the conventional [24, 80]: a layout written against `>>?` stays
    runnable when its output is piped, it just lays itself out for 80 columns. *)
 let term_size () =
-  let default = Arr [| Int 24; Int 80 |] in
+  let default = arr [| Int 24; Int 80 |] in
   if not (Unix.isatty Unix.stdout) then default
   else
     match Unix.open_process_in "stty size 2>/dev/null" with
@@ -856,7 +907,7 @@ let term_size () =
       (match String.split_on_char ' ' (String.trim line) with
        | [ r; c ] ->
          (match int_of_string_opt r, int_of_string_opt c with
-          | Some r, Some c -> Arr [| Int r; Int c |]
+          | Some r, Some c -> arr [| Int r; Int c |]
           | _ -> default)
        | _ -> default)
     | exception _ -> default
