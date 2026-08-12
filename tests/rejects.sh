@@ -1,76 +1,57 @@
 #!/usr/bin/env bash
-# Forms zyml must refuse.
+# rejects.sh — forms every engine must refuse.
 #
-# parity.sh cannot cover these: it compares the stdout of programs that *run*,
-# and a refused program is scored UNSUP and skipped. But a form zyml accepts and
-# the reference engine rejects is the worst kind of divergence — the program
-# works here and does not compile there, so the gate that is supposed to keep
-# the engines interchangeable never sees it.
+# A wrapper over ZyQuality (../zyquality), the project's point of record for
+# testing.  The four cases that used to be shell heredocs in this file are now
+# `reject/assignment/*.zy` there, each carrying its own `// @reject:` reason.
 #
 #   bash tests/rejects.sh
+#   bash tests/rejects.sh -v          # name the forms that are correctly refused
 #
-# Exit status: 0 when every case is refused by both engines, 1 otherwise.
+# Why this had to move rather than stay local: it compared zyml against the
+# Rust reference and asked no one else.  Run against all four engines, the very
+# first sweep found that the browser engine *accepts* all four forms — it runs
+# `m[1][2] = 77`, changes nothing, and exits 0.  A silent no-op is worse than a
+# program that does not compile, and no suite in the project could see it,
+# because consensus compares what programs print and a refused program prints
+# nothing.
+#
+# This wrapper still asks only about zyml and the reference engine, on purpose:
+# it is zyml's gate, and a gate that goes red for a defect in another repository
+# is a gate its owner learns to ignore.  The whole-project question is
+# `zyq reject` (all four engines), which `zyq suite` runs.
+#
+# Exit status: 0 refused by both, 1 accepted by one, 2 could not run.
 
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ZYML=./zyml
-ZYMBOL=${ZYMBOL:-zymbol}
+ZYML_DIR="$(pwd)"
 
-[[ -x $ZYML ]] || { echo "build first: make" >&2; exit 2; }
-command -v "$ZYMBOL" >/dev/null || { echo "reference engine '$ZYMBOL' not found" >&2; exit 2; }
-
-RED='\033[0;31m'; GREEN='\033[0;32m'; RESET='\033[0m'
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-fail=0
-
-# name | source | why
-check() {
-  local name="$1" src="$2" why="$3"
-  printf '%s\n' "$src" > "$tmp/t.zy"
-
-  "$ZYMBOL" run "$tmp/t.zy" >/dev/null 2>&1 </dev/null; local ref=$?
-  "$ZYML"   run "$tmp/t.zy" >/dev/null 2>&1 </dev/null; local ml=$?
-
-  if [[ $ref -eq 0 ]]; then
-    echo -e "  ${RED}BAD TEST${RESET}  $name — the reference engine accepts it, so zyml should too"
-    fail=1
-  elif [[ $ml -eq 0 ]]; then
-    echo -e "  ${RED}FAIL${RESET}      $name — zyml accepts it, reference rejects it"
-    echo "            $why"
-    fail=1
-  else
-    echo -e "  ${GREEN}ok${RESET}        $name"
-  fi
+find_zyq() {
+    if [[ -n "${ZYQ_ROOT:-}" ]]; then
+        [[ -x "$ZYQ_ROOT/zyq" && -f "$ZYQ_ROOT/engines.toml" ]] && { echo "$ZYQ_ROOT"; return 0; }
+        return 1
+    fi
+    local sibling="$ZYML_DIR/../zyquality"
+    [[ -x "$sibling/zyq" && -f "$sibling/engines.toml" ]] && { (cd "$sibling" && pwd -P); return 0; }
+    return 1
 }
 
-echo "Forms both engines must refuse"
-echo
-
-check "nested indexed assignment" \
-      'm = [[1,2],[3,4]]
-m[1][2] = 77' \
-      "nesting is navigated with '>', and a change must say so with '\$~': m = m[i>j]\$~ v"
-
-check "deeper nested indexed assignment" \
-      'c = [[[1,2]]]
-c[1][1][1] = 5' \
-      "same rule at any depth"
-
-check "\$~ as a statement" \
-      'a = [1,2,3]
-a[1]$~ 9' \
-      "'\$~' returns a new collection; dropping it makes the line a no-op"
-
-check "deep \$~ as a statement" \
-      'm = [[1,2],[3,4]]
-m[1>2]$~ 9' \
-      "same: the result has to be assigned"
-
-echo
-if [[ $fail -eq 0 ]]; then
-  echo -e "${GREEN}All rejection cases hold.${RESET}"
-else
-  echo -e "${RED}Some forms are accepted here and not by the reference engine.${RESET}"
+if ! ZYQ="$(find_zyq)"; then
+    echo "rejects.sh: ZyQuality not found — QA for this project lives there." >&2
+    echo "  git clone https://github.com/zymbol-lang/zyquality.git ../zyquality" >&2
+    echo "  make -C ../zyquality" >&2
+    echo "  (or set ZYQ_ROOT)" >&2
+    exit 2
 fi
-exit $fail
+
+[[ -x ./zyml ]] || { echo "rejects.sh: build zyml first: make" >&2; exit 2; }
+export ZYML_BIN="$ZYML_DIR/zyml"
+
+echo "rejects.sh: delegating to ZyQuality at $ZYQ"
+echo "  → zyq reject --engines zytw,zyml"
+echo "  (the four-engine question is 'zyq reject'; see the note above)"
+echo
+
+exec "$ZYQ/zyq" --root "$ZYQ" reject --engines zytw,zyml "$@"

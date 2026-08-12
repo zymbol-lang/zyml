@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-415%2F538-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-441%2F454-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
 
@@ -125,7 +125,7 @@ src/lexer.ml     tokenizer (longest-match on symbols; Zymbol has no keywords)
 src/parser.ml    recursive descent; mirrors the Rust precedence chain
 src/compile.ml   AST -> closures, with name resolution folded in
 src/main.ml      CLI
-tests/parity.sh  differential test against the reference `zymbol` binary
+tests/parity.sh  wrapper over ZyQuality: zyml against the reference engine
 bench/run.sh     three-engine wall-clock comparison
 ```
 
@@ -134,23 +134,47 @@ bench/run.sh     three-engine wall-clock comparison
 Correctness is defined differentially: a program is correct when `zyml run`
 produces byte-identical stdout to `zymbol run`.
 
+**That comparison lives in [ZyQuality](https://github.com/zymbol-lang/zyquality)**,
+the project's point of record for testing. zyml is one of four engines and they
+are all graded against the same corpus there. `tests/parity.sh` and
+`tests/rejects.sh` are wrappers; they exit **2** if that checkout is absent — a
+gate must not read "nothing ran" as "nothing failed".
+
 ```bash
-make test        # this project's own corpus, plus the rejection cases
-make corpus      # every .zy in ../interpreter/tests
+git clone https://github.com/zymbol-lang/zyquality.git ../zyquality
+make -C ../zyquality
+
+make test        # parity + rejections
+make corpus      # same thing: there is one corpus now
 make rejects     # only the forms zyml must refuse
-bash tests/parity.sh --corpus -v    # ... and print each mismatch
+bash tests/parity.sh -v             # ... and print each agreement too
 ```
 
-`tests/rejects.sh` exists because `parity.sh` structurally cannot see one class
-of bug: a program zyml accepts and the reference engine refuses is scored
-`UNSUP` and skipped, so the divergence that matters most — code that runs here
-and does not compile there — is exactly the one the differential test is blind
-to.  It caught two: chained indexed assignment (`m[i][j] = v`) and `$~` used as
-a statement.  Both are refused now; see D2 in the audit for why the language
-does not want either.
+`tests/cases/` — 22 files that existed only here — moved there as
+`corpus/smoke/`, so the other three engines are graded on zyml's bring-up suite
+too. The exclusions this script used to carry (`input/`, `manual_check.zy`,
+`grep -L lib_time`) are now rules in `zyquality/corpus.toml`, where every runner
+can read them. One of them was wrong: `input/` was excluded because this script
+fed every engine `/dev/null`, but each of those 14 files has a `.input` beside
+it and `zyq` feeds it. Those files are compared now.
+
+`tests/rejects.sh` exists because parity structurally cannot see one class of
+bug: a program zyml accepts and the reference engine refuses is scored `UNSUP`
+and skipped, so the divergence that matters most — code that runs here and does
+not compile there — is exactly the one the differential test is blind to. It
+caught two: chained indexed assignment (`m[i][j] = v`) and `$~` used as a
+statement. Both are refused now; see D2 in the audit for why the language does
+not want either.
+
+Those four forms are now `zyquality/reject/`, and asking all four engines rather
+than two found something on the first sweep: **the browser engine accepts every
+one of them.** It runs `m[1][2] = 77`, changes nothing and exits 0. This
+repository's gate stays scoped to zyml and the reference engine on purpose — a
+gate that goes red for a defect in another repository is a gate its owner learns
+to ignore. The four-engine question is `zyq reject`.
 
 Key input is the exception: `<<|` needs a real terminal, so it is tested
-through a pty rather than a pipe — see [tests/tui/](tests/tui/).  The same
+through a pty rather than a pipe — see [tests/tui/](tests/tui/). The same
 harness runs whole TUI applications: the Snake game in `../serpiente` renders
 byte-identically under both engines, down to the escape sequences.
 
@@ -158,30 +182,24 @@ byte-identically under both engines, down to the escape sequences.
 cd ../serpiente && ../zyml/zyml run serpiente.zy
 ```
 
-`--corpus` expects a checkout of the Zymbol interpreter at `../interpreter`,
-and the reference `zymbol` binary on `PATH`.
+Three outcomes. `DIVERGE` — both engines ran and disagreed — is a bug.
+*unsupported* — zyml refused to compile — is a feature not built yet, and is the
+progress metric. Agreement is byte-identical output *and* the same verdict:
+comparing stdout alone cannot tell "printed nothing and ran" from "printed
+nothing and refused to compile".
 
-Three outcomes.  `DIFF` — both engines ran and disagreed — is a bug.  `UNSUP` —
-zyml refused to compile — is a feature not built yet, and is the progress
-metric.  `PASS` is byte-identical output.
+**Status**, measured 2026-08-12 over the unified corpus of 585 files:
+**441 agree, 13 diverge, 130 not yet supported.**
 
-**Status:** 20/20 on the local corpus.  On the reference corpus (538 files):
-**415 identical, 11 differing, 112 not yet supported.**
+The 13 differences are accounted for, and none is a wrong answer:
 
-Two groups are excluded from that count because their output is not a function
-of the program: `input/`, which reads stdin, and anything importing `lib_time`,
-which prints elapsed wall time and therefore differs between engines *because*
-they differ in speed.
-
-The 11 differences are all accounted for, and none is a wrong answer:
-
-* **7** are diagnostics from the Rust *semantic analyser* — array homogeneity,
+* Most are diagnostics from the Rust *semantic analyser* — array homogeneity,
   argument type inference, undefined-variable detection inside lambdas,
-  underscore-variable scope rules, `°` used in output position.  Those programs
+  underscore-variable scope rules, `°` used in output position. Those programs
   are rejected before running; zyml has no separate analysis pass, so it runs
   them.
-* **4** are error-value edge cases and error *message* wording, where the kind
-  matches but the text is this engine's own.
+* The rest are error-value edge cases and error *message* wording, where the
+  kind matches but the text is this engine's own.
 
 ### `UNSUP` over-counts by five
 

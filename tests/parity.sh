@@ -1,101 +1,84 @@
 #!/usr/bin/env bash
-# Differential test: run the same .zy program through the reference Rust engine
-# and through zyml, and compare stdout byte for byte.
+# parity.sh — zyml against the reference Rust engine.
 #
-#   bash tests/parity.sh                  # the OCaml/tests/cases corpus
-#   bash tests/parity.sh --corpus         # ../interpreter/tests/**/*.zy
-#   bash tests/parity.sh --corpus -v      # ... and print every mismatch
+# A wrapper over ZyQuality (../zyquality), the project's point of record for
+# testing.  The corpus, the exclusion rules and the comparison live there.
 #
-# Three outcomes per file:
-#   PASS   identical output
-#   DIFF   both engines ran, output differs        -> a real bug
-#   UNSUP  zyml refused the program (lex/parse/compile error, exit 1 with a
-#          "... error:" line and no output)        -> a feature not built yet
+#   bash tests/parity.sh              # the whole corpus
+#   bash tests/parity.sh --corpus     # same thing; kept for old callers
+#   bash tests/parity.sh -v           # show the files that agree too
 #
-# UNSUP is reported separately on purpose: it is the phase-by-phase progress
-# metric, while DIFF must always be zero.
+# What this script used to be, and what changed:
+#
+#   * `tests/cases/*.zy` — 22 files that existed only here — are now
+#     `corpus/smoke/` in zyquality, so the other three engines are graded on
+#     them too.  They were zyml's bring-up suite and nothing else ever ran them.
+#
+#   * The exclusions were `input/`, `manual_check.zy` and `grep -L lib_time`,
+#     written here and invisible to every other runner.  They are now rules in
+#     zyquality/corpus.toml.  One of them was wrong: `input/` was excluded
+#     because this script fed every engine /dev/null, but each of those 14 files
+#     has a `.input` beside it and zyq feeds it.  Those files are compared now.
+#
+#   * UNSUP is unchanged in meaning: zyml declares its refusal prefixes in
+#     engines.toml, and a refused program is reported apart from a wrong answer.
+#     It is the phase-by-phase progress metric; a divergence must stay zero.
+#
+# Exit status: 0 no divergence, 1 a divergence, 2 could not run.
 
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ZYML=./zyml
-ZYMBOL=${ZYMBOL:-zymbol}
-VERBOSE=0
-MODE=cases
+ZYML_DIR="$(pwd)"
 
-for a in "$@"; do
-  case "$a" in
-    --corpus) MODE=corpus ;;
-    -v|--verbose) VERBOSE=1 ;;
-    *) echo "unknown option: $a" >&2; exit 2 ;;
-  esac
-done
-
-[[ -x $ZYML ]] || { echo "build first: make" >&2; exit 2; }
-command -v "$ZYMBOL" >/dev/null || { echo "reference engine '$ZYMBOL' not found" >&2; exit 2; }
-
-if [[ $MODE == cases ]]; then
-  mapfile -t FILES < <(find tests/cases -name '*.zy' | sort)
-else
-  # Two groups are excluded because their output is not a function of the
-  # program, so comparing it would be meaningless rather than informative:
-  #   - `input/`  reads stdin, and both engines are fed /dev/null here.
-  #   - anything importing `lib_time` prints elapsed wall time, which differs
-  #     between engines *because* they differ in speed.
-  #   - `scripts/manual_check.zy` shells out to ./target/release/zymbol by
-  #     relative path, so what it prints depends on the caller's directory,
-  #     not on the engine.
-  mapfile -t FILES < <(find ../interpreter/tests -name '*.zy' \
-                        -not -path '*/input/*' \
-                        -not -name 'manual_check.zy' \
-                       | xargs grep -L lib_time \
-                       | sort)
-fi
-
-pass=0; diff=0; unsup=0
-declare -a diff_list=() unsup_list=()
-
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-
-for f in "${FILES[@]}"; do
-  # The reference engine prints analysis warnings to stderr; only stdout counts.
-  timeout 10 "$ZYMBOL" run "$f" >"$tmp/ref.out" 2>"$tmp/ref.err" </dev/null
-  ref_rc=$?
-  timeout 10 "$ZYML" run "$f" >"$tmp/ml.out" 2>"$tmp/ml.err" </dev/null
-  ml_rc=$?
-
-  if [[ $ml_rc -ne 0 ]] && grep -qE '^(Lex|Parse|Compile) error:' "$tmp/ml.err"; then
-    unsup=$((unsup+1)); unsup_list+=("$f: $(head -1 "$tmp/ml.err")")
-    continue
-  fi
-
-  if cmp -s "$tmp/ref.out" "$tmp/ml.out"; then
-    pass=$((pass+1))
-  else
-    diff=$((diff+1))
-    diff_list+=("$f")
-    if [[ $VERBOSE == 1 ]]; then
-      echo "--- DIFF $f (ref rc=$ref_rc, zyml rc=$ml_rc)"
-      diff <(cat "$tmp/ref.out") <(cat "$tmp/ml.out") | head -12
+find_zyq() {
+    if [[ -n "${ZYQ_ROOT:-}" ]]; then
+        [[ -x "$ZYQ_ROOT/zyq" && -f "$ZYQ_ROOT/engines.toml" ]] && { echo "$ZYQ_ROOT"; return 0; }
+        return 1
     fi
-  fi
+    local sibling="$ZYML_DIR/../zyquality"
+    [[ -x "$sibling/zyq" && -f "$sibling/engines.toml" ]] && { (cd "$sibling" && pwd -P); return 0; }
+    return 1
+}
+
+if ! ZYQ="$(find_zyq)"; then
+    if [[ -n "${ZYQ_ROOT:-}" ]]; then
+        echo "parity.sh: ZYQ_ROOT='$ZYQ_ROOT' is not a ZyQuality checkout." >&2
+        echo "  Expected '$ZYQ_ROOT/zyq' and '$ZYQ_ROOT/engines.toml'." >&2
+    else
+        cat >&2 <<'EOF'
+parity.sh: ZyQuality not found — QA for this project lives there.
+
+  zyml is one of four engines, and they are all graded against the same corpus
+  in the zyquality repository.  This script is a thin wrapper over it.
+
+      git clone https://github.com/zymbol-lang/zyquality.git ../zyquality
+      make -C ../zyquality
+
+  Or:  ZYQ_ROOT=/path/to/zyquality bash tests/parity.sh
+EOF
+    fi
+    exit 2
+fi
+
+[[ -x ./zyml ]] || { echo "parity.sh: build zyml first: make" >&2; exit 2; }
+
+ARGS=()
+for a in "$@"; do
+    case "$a" in
+        --corpus) ;;                       # the corpus is the only mode now
+        --cases)  ARGS+=(--filter smoke/) ;;
+        *)        ARGS+=("$a") ;;
+    esac
 done
 
-total=${#FILES[@]}
+# zyml is found through engines.toml's ${ZYML_BIN:-../zyml/zyml}; point it at
+# this checkout so the wrapper tests the binary next to it, not whichever one
+# happens to sit beside zyquality.
+export ZYML_BIN="$ZYML_DIR/zyml"
+
+echo "parity.sh: delegating to ZyQuality at $ZYQ"
+echo "  → zyq consensus --engines zytw,zyml"
 echo
-echo "parity: $pass/$total identical, $diff differing, $unsup unsupported"
 
-if [[ $VERBOSE == 1 && $unsup -gt 0 ]]; then
-  echo
-  echo "unsupported:"
-  printf '  %s\n' "${unsup_list[@]}" | sort -t: -k2 | head -60
-fi
-
-if [[ $diff -gt 0 && $VERBOSE == 0 ]]; then
-  echo
-  echo "differing files:"
-  printf '  %s\n' "${diff_list[@]}"
-fi
-
-# Only a real behavioural divergence is a failure.
-[[ $diff -eq 0 ]]
+exec "$ZYQ/zyq" --root "$ZYQ" consensus --engines zytw,zyml "${ARGS[@]}"
