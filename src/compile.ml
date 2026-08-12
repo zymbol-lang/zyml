@@ -85,6 +85,93 @@ let script_args : string list ref = ref []
    the shape of one has to look through it. *)
 let rec unwrap (s : stmt) = match s with At (_, x) -> unwrap x | x -> x
 
+(* ── Loop-context analysis ───────────────────────────────────────────────────
+
+   `@!`/`@>` need an enclosing loop, and `@:L!`/`@:L>` need an enclosing loop
+   labelled L.  Both are decidable here: a label is lexical where it is declared
+   and lexical where it is used.
+
+   zyml already refused these programs, but at run time — `guard` in main.ml
+   catches the jump that reached the top and reports it.  That is late in two
+   ways: the program has already printed part of its output, and a branch that
+   never executes is never checked.  The reference implementation made this a
+   semantic error in v0.0.9 (crates/zymbol-semantic/src/loop_context.rs), so the
+   check moves to compile time here too and `zyml check` reports it without
+   running anything.  The run-time handlers in main.ml stay as a backstop.
+
+   A function or lambda body is a boundary: the caller's loops are not in scope
+   inside a callee.  This is not a choice — it is how the frames work, which is
+   why the run-time behaviour was already this.
+
+   `Sleep` (@~) is deliberately not here: it pauses execution without acting on
+   the loop's control flow, so it carries no loop requirement.  Every engine has
+   always accepted it at top level. *)
+
+let check_loop_context (prog : program) : unit =
+  (* `labels` holds one entry per enclosing loop, innermost first; None is an
+     unlabelled loop, which satisfies a bare `@!` but no labelled one. *)
+  let fail line msg =
+    raise (Compile_error
+             (if line > 0 then Printf.sprintf "%s (line %d)" msg line else msg))
+  in
+  let rec st labels line s =
+    match s with
+    | At (l, inner) -> st labels l inner
+    | Break None ->
+      if labels = [] then fail line "'@!' outside a loop"
+    | Continue None ->
+      if labels = [] then fail line "'@>' outside a loop"
+    | Break (Some l) | Continue (Some l) ->
+      if not (List.exists (fun x -> x = Some l) labels) then
+        fail line (Printf.sprintf "no enclosing loop is labelled '%s'" l)
+    | Loop (lbl, head, body) ->
+      (* The head can hold a lambda: `@ x:arr$> (y -> …)`. *)
+      (match head with
+       | Infinite -> ()
+       | Count e -> ex labels line e
+       | ForEach (_, e) -> ex labels line e
+       | ForRange (_, a, b, step) ->
+         ex labels line a; ex labels line b;
+         (match step with Some e -> ex labels line e | None -> ()));
+      List.iter (st (lbl :: labels) line) body
+    (* Blocks a jump escapes from: the loop stack carries through. *)
+    | If (branches, els) ->
+      List.iter (fun (c, b) -> ex labels line c; List.iter (st labels line) b) branches;
+      (match els with Some b -> List.iter (st labels line) b | None -> ())
+    | Try (b, catches, fin) ->
+      List.iter (st labels line) b;
+      List.iter (fun (_, cb) -> List.iter (st labels line) cb) catches;
+      (match fin with Some f -> List.iter (st labels line) f | None -> ())
+    | TuiBlock b -> List.iter (st labels line) b
+    (* Boundaries: start again with an empty stack. *)
+    | FuncDecl (_, _, body) -> List.iter (st [] line) body
+    | ModuleDecl (_, body) -> List.iter (st [] line) body
+    (* Everything else can still hide a lambda or a match arm. *)
+    | Assign (_, e) | ConstDecl (_, e) | OpAssign (_, _, e)
+    | ExprStmt e | Ret (Some e) | Sleep e | Destructure (_, e) -> ex labels line e
+    | Output items -> List.iter (ex labels line) items
+    | OutputPos (slots, items) ->
+      List.iter (function Some e -> ex labels line e | None -> ()) slots;
+      List.iter (ex labels line) items
+    | _ -> ()
+  and ex labels line e =
+    match e with
+    (* A match arm belongs to the enclosing loop; a lambda body does not. *)
+    | Match (scrut, arms) ->
+      ex labels line scrut;
+      List.iter (fun (_, body) -> match body with
+          | MBlock b -> List.iter (st labels line) b
+          | MExpr e -> ex labels line e) arms
+    | Lambda (_, LBlock b) -> List.iter (st [] line) b
+    | Lambda (_, LExpr e) -> ex [] line e
+    | Bin (_, a, b) -> ex labels line a; ex labels line b
+    | Un (_, a) -> ex labels line a
+    | Call (f, args) -> ex labels line f; List.iter (ex labels line) args
+    | Concat es | ArrLit es | TupLit es -> List.iter (ex labels line) es
+    | _ -> ()
+  in
+  List.iter (st [] 0) prog
+
 let new_ctx ?mscope ?mimports parent = {
   scopes = [ Hashtbl.create 16 ]; nslots = 0; parent;
   capmap = []; capget = []; ncaps = 0;
@@ -1620,6 +1707,7 @@ and comp_block (c : ctx) (stmts : stmt list) : (frame -> unit) =
 (* ------------------------------------------------------------------- entry *)
 
 let compile ?(file = "") (prog : program) : (unit -> unit) =
+  check_loop_context prog;
   Hashtbl.reset globals;
   Hashtbl.reset funcs;
   Hashtbl.reset modules;
