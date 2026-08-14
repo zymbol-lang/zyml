@@ -36,19 +36,36 @@ let int_of what = function
 
 (* ------------------------------------------------------------------- math *)
 
+(* Domain checks, worded exactly as the other three engines word them.  This
+   engine used to apply the C function and hand back whatever it produced, so
+   `ln(0.0)` was -inf and `asin(2.0)` was NaN where the others raised — an error
+   the program could neither see nor catch. *)
+let dom_positive name x =
+  if x <= 0.0 then errk "" "mat::%s: argument must be positive" name else x
+
+let dom_unit name x =
+  if x < -1.0 || x > 1.0 then errk "" "mat::%s: argument must be in [-1, 1]" name else x
+
+let dom_log x = if x <= 0.0 then errk "" "mat::log: x and base must be positive; base ≠ 1" else x
+let dom_log_base b =
+  if b <= 0.0 || b = 1.0 then errk "" "mat::log: x and base must be positive; base ≠ 1" else b
+
 let math_fns =
   let f1 name fn = (name, 1, fun (a : value array) -> Float (fn (num name a.(0)))) in
   [
-    f1 "sqrt" Float.sqrt; f1 "exp" Float.exp; f1 "ln" Float.log;
+    f1 "sqrt" Float.sqrt; f1 "exp" Float.exp;
+    f1 "ln" (fun x -> Float.log (dom_positive "ln" x));
     f1 "sin" Float.sin; f1 "cos" Float.cos; f1 "tan" Float.tan;
-    f1 "asin" Float.asin; f1 "acos" Float.acos; f1 "atan" Float.atan;
+    f1 "asin" (fun x -> Float.asin (dom_unit "asin" x));
+    f1 "acos" (fun x -> Float.acos (dom_unit "acos" x));
+    f1 "atan" Float.atan;
     f1 "tanh" Float.tanh; f1 "sinh" Float.sinh; f1 "cosh" Float.cosh;
     f1 "sigmoid" (fun x -> 1.0 /. (1.0 +. Float.exp (-.x)));
     f1 "floor" Float.floor; f1 "ceil" Float.ceil; f1 "round" Float.round;
     ("atan2", 2, fun a -> Float (Float.atan2 (num "atan2" a.(0)) (num "atan2" a.(1))));
     ("pow", 2, fun a -> Float (Float.pow (num "pow" a.(0)) (num "pow" a.(1))));
     (* One argument is the natural log; two is log base b. *)
-    ("log", 1, fun a -> Float (Float.log (num "log" a.(0))));
+    ("log", 1, fun a -> Float (Float.log (dom_log (num "log" a.(0)))));
     (* These three keep the argument's type rather than widening to Float. *)
     ("abs", 1, fun a -> match a.(0) with
        | Int i -> Int (abs i)
@@ -60,7 +77,8 @@ let math_fns =
 (* `log` takes one or two arguments.  Arity is fixed per [funcval], so the
    two-argument form is registered separately and picked by the call site. *)
 let math_log2 = native "log" 2 (fun a ->
-    Float (Float.log (num "log" a.(0)) /. Float.log (num "log" a.(1))))
+    let x = dom_log (num "log" a.(0)) and b = dom_log_base (num "log" a.(1)) in
+    Float (Float.log x /. Float.log b))
 
 (* ------------------------------------------------------------------ random *)
 

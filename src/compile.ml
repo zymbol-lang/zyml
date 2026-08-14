@@ -269,10 +269,10 @@ let bin_fn = function
   | Add -> add | Sub -> sub | Mul -> mul | Div -> div | Mod -> md | Pow -> pow
   | Eq -> (fun a b -> Bool (eq a b))
   | Neq -> (fun a b -> Bool (not (eq a b)))
-  | Lt -> (fun a b -> Bool (cmp a b < 0))
-  | Gt -> (fun a b -> Bool (cmp a b > 0))
-  | Le -> (fun a b -> Bool (cmp a b <= 0))
-  | Ge -> (fun a b -> Bool (cmp a b >= 0))
+  | Lt -> (fun a b -> Bool (ord_lt (cmp a b)))
+  | Gt -> (fun a b -> Bool (ord_gt (cmp a b)))
+  | Le -> (fun a b -> Bool (ord_le (cmp a b)))
+  | Ge -> (fun a b -> Bool (ord_ge (cmp a b)))
   | And | Or -> assert false                            (* short-circuited below *)
 
 (* A slice tolerates a start of 0 and reads it as 1 -- unlike `arr[0]`, which is
@@ -402,22 +402,22 @@ and comp_expr (c : ctx) (e : expr) : code =
   (* Specialised shapes for the overwhelmingly common `x <op> <int literal>`. *)
   | Bin (Add, a, ILit k) ->
     let ga = comp_expr c a in
-    fun fr -> (match ga fr with Int x -> Int (x + k) | v -> add v (Int k))
+    fun fr -> (match ga fr with Int x -> int_ok x "+" k (x + k) | v -> add v (Int k))
   | Bin (Sub, a, ILit k) ->
     let ga = comp_expr c a in
-    fun fr -> (match ga fr with Int x -> Int (x - k) | v -> sub v (Int k))
+    fun fr -> (match ga fr with Int x -> int_ok x "-" k (x - k) | v -> sub v (Int k))
   | Bin (Lt, a, ILit k) ->
     let ga = comp_expr c a in
-    fun fr -> (match ga fr with Int x -> Bool (x < k) | v -> Bool (cmp v (Int k) < 0))
+    fun fr -> (match ga fr with Int x -> Bool (x < k) | v -> Bool (ord_lt (cmp v (Int k))))
   | Bin (Le, a, ILit k) ->
     let ga = comp_expr c a in
-    fun fr -> (match ga fr with Int x -> Bool (x <= k) | v -> Bool (cmp v (Int k) <= 0))
+    fun fr -> (match ga fr with Int x -> Bool (x <= k) | v -> Bool (ord_le (cmp v (Int k))))
   | Bin (Gt, a, ILit k) ->
     let ga = comp_expr c a in
-    fun fr -> (match ga fr with Int x -> Bool (x > k) | v -> Bool (cmp v (Int k) > 0))
+    fun fr -> (match ga fr with Int x -> Bool (x > k) | v -> Bool (ord_gt (cmp v (Int k))))
   | Bin (Ge, a, ILit k) ->
     let ga = comp_expr c a in
-    fun fr -> (match ga fr with Int x -> Bool (x >= k) | v -> Bool (cmp v (Int k) >= 0))
+    fun fr -> (match ga fr with Int x -> Bool (x >= k) | v -> Bool (ord_ge (cmp v (Int k))))
   | Bin (Eq, a, ILit k) ->
     let ga = comp_expr c a in
     fun fr -> (match ga fr with Int x -> Bool (x = k) | v -> Bool (eq v (Int k)))
@@ -948,7 +948,7 @@ and comp_pattern (c : ctx) (pat : pattern) : (frame -> value -> bool) =
   | PLit e -> let g = comp_expr c e in fun fr v -> eq v (g fr)
   | PRange (a, b) ->
     let ga = comp_expr c a and gb = comp_expr c b in
-    fun fr v -> cmp v (ga fr) >= 0 && cmp v (gb fr) <= 0
+    fun fr v -> ord_ge (cmp v (ga fr)) && ord_le (cmp v (gb fr))
   | PCmp (op, e) ->
     let g = comp_expr c e in
     let f = bin_fn op in
@@ -1278,17 +1278,17 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
      | RSlot i ->
        fun fr ->
          (match Array.unsafe_get fr.slots i with
-          | Int x -> Array.unsafe_set fr.slots i (Int (x + d))
+          | Int x -> Array.unsafe_set fr.slots i (int_ok x "+" d (x + d))
           | v -> fr.slots.(i) <- add v (Int d))
      | RCap i ->
        fun fr ->
          (match Array.unsafe_get fr.caps i with
-          | Int x -> Array.unsafe_set fr.caps i (Int (x + d))
+          | Int x -> Array.unsafe_set fr.caps i (int_ok x "+" d (x + d))
           | v -> fr.caps.(i) <- add v (Int d))
      | RMod i ->
        fun fr ->
          (match Array.unsafe_get fr.mstate i with
-          | Int x -> Array.unsafe_set fr.mstate i (Int (x + d))
+          | Int x -> Array.unsafe_set fr.mstate i (int_ok x "+" d (x + d))
           | v -> fr.mstate.(i) <- add v (Int d))
      | RConst _ -> cerr "cannot reassign constant '%s'" name
      | _ -> cerr "undefined variable: '%s'" name)

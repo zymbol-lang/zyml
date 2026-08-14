@@ -126,6 +126,18 @@ let is_ident_char c = is_ident_start c || (c >= '0' && c <= '9')
 
 let is_digit c = c >= '0' && c <= '9'
 
+(* An integer literal, or the same error the other three engines raise.  OCaml's
+   [int_of_string] accepts up to 63 bits and raises Failure past that, which is
+   how `9223372036854775807` used to fail here as an unhelpful "int_of_string"
+   while the Rust engines accepted it. *)
+let int_token txt =
+  match int_of_string_opt txt with
+  | Some v when Value.in_int_range v -> TInt v
+  | _ ->
+    Value.errk "Range" "integer literal out of range: '%s' (%s)" txt
+      "integers range from -9007199254740991 to 9007199254740991"
+
+
 let tokenize (src : string) : t array =
   let n = String.length src in
   let i = ref 0 in
@@ -215,7 +227,7 @@ let tokenize (src : string) : t array =
       end else false
     in
     let txt = Buffer.contents b in
-    if is_float then TFloat (float_of_string txt) else TInt (int_of_string txt)
+    if is_float then TFloat (float_of_string txt) else int_token txt
   in
 
   let read_number () =
@@ -258,7 +270,7 @@ let tokenize (src : string) : t array =
         while !i < n && is_digit src.[!i] do incr i done
       end;
       let txt = String.sub src s (!i - s) in
-      if !isf then TFloat (float_of_string txt) else TInt (int_of_string txt)
+      if !isf then TFloat (float_of_string txt) else int_token txt
     end
   in
 

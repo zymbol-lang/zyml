@@ -435,14 +435,38 @@ let as_bool = function
 
 (* --------------------------------------------------------------- numerics *)
 
+(* An integer result, or the ##Range error the other three engines raise.
+
+   OCaml's native [int] is 63 bits, so it is *narrower* than the i64 the Rust
+   engines use and *wider* than the range Zymbol defines.  Both facts used to
+   show: `9223372036854775807` would not even lex here, and `2 ^ 62` answered
+   -4611686018427387904 where the Rust engines answered the true value.  With a
+   53-bit range the native int has ten bits of headroom, so a product cannot
+   wrap past the check below, and no boxing is needed to stay in step. *)
+let zy_int_max = 9007199254740991
+let zy_int_min = -9007199254740991
+let in_int_range v = v >= zy_int_min && v <= zy_int_max
+
+let int_ok x op y v =
+  if in_int_range v then Int v
+  else errk "Range" "integer overflow: %d %s %d" x op y
+
 (* A string that consists of digits participates in numeric comparison. *)
 let numeric_of_string s =
-  let s = normalize_digits s in
-  match int_of_string_opt (String.trim s) with
-  | Some i -> Some (Int i)
-  | None -> (match float_of_string_opt (String.trim s) with
-      | Some f -> Some (Float f)
-      | None -> None)
+  let s = String.trim (normalize_digits s) in
+  let digits = if String.length s > 0 && (s.[0] = '+' || s.[0] = '-')
+               then String.sub s 1 (String.length s - 1) else s in
+  let all_digits = String.length digits > 0
+                   && String.for_all (fun c -> c >= '0' && c <= '9') digits in
+  if all_digits then
+    (* Out of range it is not a number at all -- deliberately not retried as a
+       float, which would answer 9007199254740992.0 for "9007199254740993". *)
+    match int_of_string_opt s with
+    | Some i when in_int_range i -> Some (Int i)
+    | _ -> None
+  else match float_of_string_opt s with
+    | Some f -> Some (Float f)
+    | None -> None
 
 let arith op_name fi ff a b =
   match a, b with
@@ -452,9 +476,18 @@ let arith op_name fi ff a b =
   | Float x, Float y -> ff x y
   | _ -> err "cannot apply %s to %s and %s" op_name (type_name a) (type_name b)
 
-let add a b = arith "+" (fun x y -> Int (x + y)) (fun x y -> Float (x +. y)) a b
-let sub a b = arith "-" (fun x y -> Int (x - y)) (fun x y -> Float (x -. y)) a b
-let mul a b = arith "*" (fun x y -> Int (x * y)) (fun x y -> Float (x *. y)) a b
+let add a b = arith "+" (fun x y -> int_ok x "+" y (x + y)) (fun x y -> Float (x +. y)) a b
+let sub a b = arith "-" (fun x y -> int_ok x "-" y (x - y)) (fun x y -> Float (x -. y)) a b
+let mul a b =
+  arith "*"
+    (fun x y ->
+       (* The product of two in-range integers can exceed 63 bits, so the check
+          has to happen before the multiply, not after it.  The guard is on [y],
+          the divisor: with [-unsafe -O3] a division by zero is a CPU trap, not
+          an OCaml exception, so `x * 0` would take the process down. *)
+       if y <> 0 && abs x > zy_int_max / abs y then errk "Range" "integer overflow: %d * %d" x y
+       else int_ok x "*" y (x * y))
+    (fun x y -> Float (x *. y)) a b
 
 let div a b =
   match a, b with
@@ -472,10 +505,30 @@ let md a b =
 
 let pow a b =
   match a, b with
+  (* The three bases whose powers never leave the range, answered without a
+     loop -- `1 ^ 1000000000` must not spin. *)
+  | Int 0, Int y when y >= 0 -> Int (if y = 0 then 1 else 0)
+  | Int 1, Int y when y >= 0 -> Int 1
+  | Int (-1), Int y when y >= 0 -> Int (if y mod 2 = 0 then 1 else -1)
   | Int x, Int y when y >= 0 ->
-    let rec go acc b e = if e = 0 then acc else go (if e land 1 = 1 then acc * b else acc) (b * b) (e lsr 1) in
-    Int (go 1 x y)
-  | _ -> arith "^" (fun x y -> Int (int_of_float (Float.pow (float_of_int x) (float_of_int y))))
+    (* Repeated multiplication rather than square-and-multiply: every partial
+       product is checked, so a value that wraps out of the range and back in
+       cannot be mistaken for an answer.  |x| >= 2 here, so this ends within 53
+       steps either way. *)
+    let rec go acc e =
+      if e = 0 then Int acc
+      else if acc <> 0 && abs acc > zy_int_max / abs x then
+        errk "Range" "integer overflow: %d ^ %d" x y
+      else
+        let acc = acc * x in
+        if in_int_range acc then go acc (e - 1)
+        else errk "Range" "integer overflow: %d ^ %d" x y
+    in
+    go 1 y
+  (* A negative exponent is a float operation -- this used to truncate to Int 0,
+     so `2 ^ -2` was 0 here and 0.25 in the tree-walker. *)
+  | Int x, Int y -> Float (Float.pow (float_of_int x) (float_of_int y))
+  | _ -> arith "^" (fun x y -> Float (Float.pow (float_of_int x) (float_of_int y)))
            (fun x y -> Float (Float.pow x y)) a b
 
 let neg = function
@@ -506,6 +559,17 @@ let rec eq a b =
      !ok)
   | _ -> false
 
+(* What [cmp] answers for values with no ordering at all -- which for numbers
+   means NaN.  Deliberately not a value whose *sign* the operators could read:
+   an ordering comparison against it has to be false in all four directions, so
+   [lt]/[le]/[gt]/[ge] below test the code itself. *)
+let incomparable = 2
+
+let ord_lt r = r = -1
+let ord_le r = r = -1 || r = 0
+let ord_gt r = r = 1
+let ord_ge r = r = 1 || r = 0
+
 (* Ordering: numeric when both sides are numbers (a digit-only string counts as
    a number), lexicographic when both sides are non-numeric text, an error when
    a number meets text that is not a number. *)
@@ -523,7 +587,13 @@ let cmp a b =
      | Int p, Int q -> compare p q
      | _ ->
        let f = function Int i -> float_of_int i | Float f -> f | _ -> 0.0 in
-       compare (f x) (f y))
+       let a = f x and b = f y in
+       (* OCaml's [compare] is a *total* order, and it puts nan below every
+          number: `compare nan 1.0` is -1, so `nan < 1.0` came out true. IEEE-754
+          says every ordering comparison against NaN is false, so nan reports as
+          incomparable and the four operators all answer false. *)
+       if Float.is_nan a || Float.is_nan b then incomparable
+       else compare a b)
   | `T x, `T y -> compare x y
   | `C x, `C y -> compare x y
   | `T x, `C y | `C x, `T y -> compare x y
@@ -751,13 +821,22 @@ let to_float = function
       | _ -> err "cannot convert '%s' to float" s)
   | v -> err "cannot convert %s to float" (type_name v)
 
+(* A float already rounded or truncated, as an integer -- or the ##Range error
+   the other engines raise.  OCaml's [int_of_float] is undefined past the int
+   range and answered 0 for 1e300, so `###1.0e300` used to produce a number the
+   program never computed. *)
+let int_of_float_checked op f =
+  if Float.is_nan f || Float.abs f > float_of_int zy_int_max then
+    errk "Range" "integer overflow: %s cannot represent this float" op
+  else Int (int_of_float f)
+
 (* Zymbol rounds half *away from zero*, which is what Float.round does. *)
 let to_int_round = function
   | Int i -> Int i
-  | Float f -> Int (int_of_float (Float.round f))
+  | Float f -> int_of_float_checked "###" (Float.round f)
   | Str s -> (match numeric_of_string s with
       | Some (Int i) -> Int i
-      | Some (Float f) -> Int (int_of_float (Float.round f))
+      | Some (Float f) -> int_of_float_checked "###" (Float.round f)
       | _ -> err "cannot convert '%s' to integer" s)
   | v -> err "cannot convert %s to integer" (type_name v)
 
@@ -781,11 +860,11 @@ let display_width s =
 
 let to_int_trunc = function
   | Int i -> Int i
-  | Float f -> Int (int_of_float (Float.trunc f))
+  | Float f -> int_of_float_checked "##!" (Float.trunc f)
   | Chr c -> Int (codepoint_of c)          (* the only Char -> Int route *)
   | Str s -> (match numeric_of_string s with
       | Some (Int i) -> Int i
-      | Some (Float f) -> Int (int_of_float (Float.trunc f))
+      | Some (Float f) -> int_of_float_checked "##!" (Float.trunc f)
       | _ -> err "cannot convert '%s' to integer" s)
   | v -> err "cannot convert %s to integer" (type_name v)
 
