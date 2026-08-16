@@ -96,7 +96,10 @@ and cast = ToFloat | ToIntRound | ToIntTrunc
 
 and dslot = DName of string | DRest of string | DSkip
 and dpat =
-  | DSeq of dslot list                    (* [a, b] or (a, b) *)
+  (* The bool is true for a tuple pattern `(a, b)` and false for an array
+     pattern `[a, b]`.  The two are not interchangeable: the pattern is typed
+     (REFERENCE.md L32), so it has to survive parsing. *)
+  | DSeq of bool * dslot list             (* [a, b] or (a, b) *)
   | DFields of (string * string) list     (* (name: n, age: a) *)
 
 and ipart = ILit_text of string | ILit_var of string

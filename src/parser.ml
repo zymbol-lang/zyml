@@ -93,7 +93,7 @@ let is_func_decl p =
     while not !fin do
       match (if !k < Array.length p.toks then p.toks.(!k).tok else TEOF) with
       | TRParen -> fin := true
-      | TIdent _ | TComma | TRet -> incr k
+      | TIdent _ | TComma | TRet | TMod -> incr k
       | _ -> ok := false; fin := true
     done;
     !ok && (if !k + 1 < Array.length p.toks then p.toks.(!k + 1).tok = TLBrace else false)
@@ -854,7 +854,15 @@ and parse_assign_like p =
    argument built by concatenation, not three.  Same rule as the right-hand
    side of an assignment, and the comma still separates arguments because a
    comma cannot start an item. *)
-and parse_arg p = parse_assign_rhs p
+(* An argument, plus the call-site output mark `x<~` (REFERENCE.md L36).
+   The mark is accepted and dropped: it carries no run-time meaning — the
+   callee's signature is what makes a parameter an output, and this engine
+   already honours that. Checking that the mark agrees with the signature needs
+   an analysis pass this engine does not have, so here it is syntax only. *)
+and parse_arg p =
+  let e = parse_assign_rhs p in
+  if peek p = TRet then ignore (advance p);
+  e
 
 and parse_assign_rhs p =
   let first = parse_expr p in
@@ -969,7 +977,7 @@ and parse_destructure p =
         slots := [ one () ];
         while peek p = TComma do ignore (advance p); slots := one () :: !slots done
       end;
-      DSeq (List.rev !slots)
+      DSeq (closer = TRParen, List.rev !slots)
     end
   in
   expect p closer "']' or ')'";
@@ -1079,7 +1087,13 @@ and parse_func p =
     let one () =
       let n = ident p in
       let out = peek p = TRet in
-      if out then ignore (advance p);
+      if out then ignore (advance p)
+      (* `p~` is a working copy: the body may reassign it and the caller's
+         argument is untouched.  A function's scope is already isolated, so the
+         mark declares in the signature what the body would otherwise have to
+         write as a copy on its first line — it changes nothing else, and only
+         `<~` sends the change back (SYMBOLS.md §9.1). *)
+      else if peek p = TMod then ignore (advance p);
       { pname = n; pout = out }
     in
     ps := [ one () ];

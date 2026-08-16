@@ -26,7 +26,7 @@ type token =
   | TComma | TColon | TDotDot | TDot
   (* control *)
   | TIf | TElseIf | TUnderscore
-  | TArrow | TFatArrow | TRet
+  | TArrow | TFatArrow | TRet | TMod
   | TAt | TAtBreak | TAtCont | TAtSleep
   | TAtLabel of string | TAtLabelBreak of string | TAtLabelCont of string
   (* io *)
@@ -86,7 +86,7 @@ let show = function
   | TLBracket -> "[" | TRBracket -> "]"
   | TComma -> "," | TColon -> ":" | TDotDot -> ".." | TDot -> "."
   | TIf -> "?" | TElseIf -> "_?" | TUnderscore -> "_"
-  | TArrow -> "->" | TFatArrow -> "=>" | TRet -> "<~"
+  | TArrow -> "->" | TFatArrow -> "=>" | TRet -> "<~" | TMod -> "~"
   | TAt -> "@" | TAtBreak -> "@!" | TAtCont -> "@>" | TAtSleep -> "@~"
   | TAtLabel s -> "@:" ^ s | TAtLabelBreak s -> "@:" ^ s ^ "!"
   | TAtLabelCont s -> "@:" ^ s ^ ">"
@@ -546,6 +546,7 @@ let tokenize (src : string) : t array =
       | '[' -> push TLBracket; incr i
       | ']' -> push TRBracket; incr i
       | ',' -> push TComma; incr i
+      | '~' -> push TMod; incr i
       | c -> fail (Printf.sprintf "unexpected character '%c'" c)
     end
   done;

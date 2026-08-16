@@ -1341,28 +1341,65 @@ and comp_stmt (c : ctx) (s : stmt) : (frame -> unit) =
   | Destructure (pat, e) ->
     let g = comp_expr c e in
     (match pat with
-     | DSeq slots ->
+     | DSeq (is_tuple, slots) ->
        let stores = List.map (function
            | DSkip -> `Skip
            | DName n -> `One (comp_store c (LVar n))
            | DRest n -> `Rest (comp_store c (LVar n))) slots in
+       let n_slots = List.length stores in
+       let has_rest = List.exists (function `Rest _ -> true | _ -> false) stores in
+       (* Items after a `*rest` are entitled to the tail, so the rest stops short
+          of them — the same `trailing` the other three engines compute. *)
+       let trailing =
+         let rec after n = function
+           | [] -> 0
+           | `Rest _ :: tl -> List.length tl
+           | _ :: tl -> after (n + 1) tl
+         in after 0 stores
+       in
+       (* The remainder keeps the shape of the container it came from. *)
+       let wrap a = if is_tuple then tup a else arr a in
        fun fr ->
          let items = match g fr with
-           | Arr { c = a; _ } | Tup { c = a; _ } | NTup (_, { c = a; _ }) -> a
-           | v -> errk "Type" "cannot destructure %s" (type_name v)
+           | Arr { c = a; _ } when not is_tuple -> a
+           | Tup { c = a; _ } when is_tuple -> a
+           | v ->
+             if is_tuple
+             then errk "Runtime" "tuple pattern '( … )' requires a tuple, got %s"
+                    (type_symbol v)
+             else errk "Runtime" "array pattern '[ … ]' requires an array, got %s"
+                    (type_symbol v)
          in
+         let len = Array.length items in
          let i = ref 0 in
-         List.iter (fun st ->
+         List.iteri (fun pos st ->
+             (* The last slot absorbs the remainder unless an explicit `*rest`
+                already governs the sharing out (REFERENCE.md L33). *)
+             let absorbs = (not has_rest) && pos = n_slots - 1 in
              match st with
-             | `Skip -> incr i
+             | `Skip -> i := if absorbs then len else !i + 1
              | `One store ->
-               if !i < Array.length items then store fr (copy_val items.(!i));
-               incr i
+               if absorbs then begin
+                 let n = len - !i in
+                 let v =
+                   if n <= 0 then Unit
+                   else if n = 1 then copy_val items.(!i)
+                   else wrap (Array.map copy_val (Array.sub items !i n))
+                 in
+                 store fr v;
+                 i := len
+               end else begin
+                 if !i < len then store fr (copy_val items.(!i))
+                 else store fr Unit;
+                 incr i
+               end
              | `Rest store ->
-               let n = Array.length items - !i in
-               store fr (arr (Array.map copy_val
-                                (Array.sub items !i (max n 0))));
-               i := Array.length items)
+               let stop = if trailing > 0 && len > !i + trailing
+                 then len - trailing else len in
+               let n = stop - !i in
+               store fr (wrap (Array.map copy_val
+                                 (Array.sub items !i (max n 0))));
+               i := max !i stop)
            stores
      | DFields fields ->
        let stores = List.map (fun (f, n) -> (f, comp_store c (LVar n))) fields in
