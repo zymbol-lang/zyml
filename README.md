@@ -10,13 +10,43 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-DISCONTINUED-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/version-v0.1.0-informational?style=flat-square"/>
   <img src="https://img.shields.io/badge/language-OCaml-e88b00?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"/>
-  <img src="https://img.shields.io/badge/status-experimental-yellow?style=flat-square"/>
-  <img src="https://img.shields.io/badge/parity-441%2F454-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/parity-468%2F599-yellow?style=flat-square"/>
   <img src="https://img.shields.io/badge/vs%20tree--walker-5--7x-brightgreen?style=flat-square"/>
 </p>
+
+---
+
+> ## ⚠️ This engine is discontinued
+>
+> **As of 2026-08-17 zyml is no longer maintained, and no longer part of
+> Zymbol's test gate.** Zymbol has three engines: the Rust tree-walker
+> (`zytw`), the Rust register VM (`zyvm`), and the JavaScript engine that runs
+> the playground (`zyjs`).
+>
+> Two measured reasons, both in **[DEPRECATED.md](DEPRECATED.md)**:
+>
+> - **Correctness parity never arrived.** zyml could not run **131 of the 599**
+>   shared-corpus files and diverged on 15 more. The two Rust engines diverge on
+>   **zero**.
+> - **The speed advantage did not survive real load.** Faster than the register
+>   VM on microbenchmarks and at 13×13 go, but **3.4× slower at 19×19** even
+>   after copy-on-write.
+>
+> **It was not wasted.** A third independent implementation forced decisions no
+> specification fixed: it found the call-arity gap (REFERENCE.md L28) by
+> rejecting two real programs the Rust tooling accepted, it was the fourth
+> answer that exposed the labelled-jump disagreement (L29), and it produced the
+> differential audit in [`es/auditoria_motores.md`](es/auditoria_motores.md)
+> whose method outlived it.
+>
+> Everything below this line documents the engine as it was on its final
+> commit. The numbers were true when measured and no attempt has been made to
+> refresh them. The parity badge now reads against the 599-file shared corpus,
+> not zyml's own 454-file bring-up suite.
 
 ---
 

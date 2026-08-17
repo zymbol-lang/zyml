@@ -1,3 +1,13 @@
+# ⚠️ zyml is DISCONTINUED as of 2026-08-17 — see DEPRECATED.md.
+#
+# `make` still builds the engine: it needs nothing but ocamlopt and this tree.
+#
+# `make test` no longer works, and that is deliberate rather than rotted. The
+# test targets below are wrappers over ZyQuality, which dropped the `zyml`
+# entry from its engines.toml when the engine was retired. Reviving them means
+# re-adding that entry and setting ZYML_BIN; the `test` target says so rather
+# than failing with an opaque "unknown engine".
+#
 # Build with ocamlopt directly — no dune, no opam switch, no external libraries.
 # The only dependency beyond the compiler is `unix`, which ships with OCaml.
 
@@ -10,7 +20,7 @@ MODULES = value ast lexer parser stdlib_zy compile main
 CMX = $(addprefix src/,$(addsuffix .cmx,$(MODULES)))
 BIN = zyml
 
-.PHONY: all clean test corpus rejects tui bench
+.PHONY: all clean test test-force corpus rejects tui bench
 
 all: $(BIN)
 
@@ -29,11 +39,21 @@ src/compile.cmx: src/compile.ml src/ast.cmx src/value.cmx src/parser.cmx src/lex
 src/stdlib_zy.cmx: src/stdlib_zy.ml src/value.cmx
 src/main.cmx: src/main.ml src/parser.cmx src/compile.cmx
 
-# QA for this project lives in ZyQuality (../zyquality): one corpus, one set of
-# exclusion rules, four engines graded on the same files.  These targets are
-# thin wrappers over it.  `tests/cases/` moved there as `corpus/smoke/`, so the
-# other three engines are graded on zyml's bring-up suite too.
-test: $(BIN)
+# QA for this project lived in ZyQuality (../zyquality): one corpus, one set of
+# exclusion rules, the engines graded on the same files.  These targets are thin
+# wrappers over it.  `tests/cases/` moved there as `corpus/smoke/`, so the other
+# engines are graded on zyml's bring-up suite too — that part outlived zyml.
+#
+# ZyQuality no longer declares a `zyml` engine, so these wrappers have nothing
+# to ask for.  Exit 2, not 0: a retired gate must not read as a passing one.
+test:
+	@echo "zyml is discontinued (2026-08-17) — see DEPRECATED.md." >&2
+	@echo "ZyQuality dropped the \`zyml\` engine, so these wrappers cannot run." >&2
+	@echo "To revive: re-add the [[engine]] entry to zyquality/engines.toml," >&2
+	@echo "set ZYML_BIN to this tree's ./zyml, then \`make test-force\`." >&2
+	@exit 2
+
+test-force: $(BIN)
 	@bash tests/parity.sh
 	@bash tests/rejects.sh
 	@bash tests/tui.sh
