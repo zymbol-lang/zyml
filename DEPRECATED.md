@@ -1,6 +1,8 @@
 # zyml is discontinued
 
-**Date: 2026-08-17. Final commit: `5167b0e`. Status: archived, read-only.**
+**Date: 2026-08-17. Status: archived, read-only.**
+**Last commit of engine development: `5167b0e`** — everything after it is this
+notice.
 
 zyml was an experimental third engine for [Zymbol](https://github.com/zymbol-lang/interpreter),
 written in OCaml, which compiled the whole program to native closures before
@@ -42,7 +44,7 @@ register VM. Those programs all fit in a few slots, and none of them copied a
 large aggregate, which is what a real program does most.
 
 The go engine at 19×19, after zyml implemented copy-on-write
-([`GO/BENCHMARK.md`](https://github.com/zymbol-lang/interpreter)):
+([`BENCHMARK.md` in zy-GO](https://github.com/zymbol-lang/zy-GO/blob/main/BENCHMARK.md)):
 
 | board | `zyvm` | zyml before COW | zyml after COW |
 |---|---|---|---|
